@@ -1,5 +1,7 @@
 # [English](English.md) [中文](README.md)
 
+本分支提供彩色阅读定制版：默认加载浅米色阅读预设，支持背景配色、颜色规则和手动高亮，并关闭 Android 官方版本检查。使用方式和功能范围见 [彩色阅读说明](COLOR_READER.md)，自行打包见 [Android 构建说明](BUILDING_ANDROID.md)。
+
 [![icon_android](https://github.com/gedoor/gedoor.github.io/blob/master/static/img/legado/icon_android.png)](https://play.google.com/store/apps/details?id=io.legado.play.release)
 <a href="https://jb.gg/OpenSourceSupport" target="_blank">
 <img width="24" height="24" src="https://resources.jetbrains.com/storage/products/company/brand/logos/jb_beam.svg?_gl=1*135yekd*_ga*OTY4Mjg4NDYzLjE2Mzk0NTE3MzQ.*_ga_9J976DJZ68*MTY2OTE2MzM5Ny4xMy4wLjE2NjkxNjMzOTcuNjAuMC4w&_ga=2.257292110.451256242.1669085120-968288463.1639451734" alt="idea"/>
@@ -58,7 +60,7 @@ Legado 已基于 Kotlin Multiplatform (KMP) 重构，同一套代码覆盖以下
 
 #### Android
 
-* [发行版（Releases）](https://github.com/huajideshutiao/legado/releases/latest)
+* 定制版：[本仓库构建记录与产物](https://github.com/senyayume/legado/actions)；请确认构建分支为 `codex/colortxt-remigration-20260912`。本仓库尚未发布正式 Release。
 
 #### iOS
 
