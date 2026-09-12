@@ -1,0 +1,4 @@
+<resources>
+    <string name="reader_palette_saved_refresh_failed">Appearance saved, but highlighting could not refresh. Reopen this book to retry.</string>
+    <string name="reader_background_import_failed">Could not import the background. Choose a readable PNG, JPG or WebP image up to 12 MB; at most 32 images per editing session.</string>
+</resources>

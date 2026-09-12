@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="reader_command_palette">Reader colors</string>
+    <string name="reader_command_rules">Color rules</string>
+    <string name="reader_command_highlight">Annotate highlight</string>
+    <string name="reader_command_foreground">Color text</string>
+    <string name="reader_command_background">Highlight background</string>
+    <string name="reader_command_remove_highlight">Remove highlight</string>
+    <string name="reader_command_invalid_selection">Select text within one chapter.</string>
+    <string name="reader_command_save_failed">Could not save. Your selection has been kept.</string>
+    <string name="reader_command_refresh_failed">The change was saved, but the page could not refresh. Please retry.</string>
+    <string name="reader_command_stale_selection">The chapter or selection changed. Please select the text again.</string>
+    <string name="reader_command_loading">Saving…</string>
+</resources>

@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntOffset
@@ -48,7 +49,7 @@ import org.jetbrains.compose.resources.decodeToImageBitmap
  * 绘制顺序与 app 端一致：
  * 1. 遍历 `textPage.lines`，每行 `line.lineTop` 作为 y 偏移（drawText topLeft.y = lineBase - baselineOffset）
  * 2. 遍历 `line.columns`，按 [BaseColumn] 实际类型分发：
- *    - [TextColumn]: drawText(charData)（选中/搜索高亮底色由 [drawOverlayLayers] 独立叠加）
+ *    - [TextColumn]: drawText(charData)（搜索背景先于字形，选区由 [drawOverlayLayers] 叠加）
  *    - [ImageColumn]: drawImage(renderCache as? ImageBitmap, srcSize, dstSize)
  *    - [ReviewColumn]: drawCircle + drawText(countText)
  * 3. 朗读/搜索下划线（E-Ink）与 `ReadBookConfig.underline` 下划线：drawLine
@@ -67,7 +68,7 @@ import org.jetbrains.compose.resources.decodeToImageBitmap
  *   拖拽扩选只失效本 Canvas 重绘、不触发任何重组；高亮走 Overlay 投影层绘制
  * @param ttsHighlight 朗读高亮位置（章节 + 章内字符位置，null = 无高亮）：声明式参数，
  *   绘制期折算成本页高亮行区间。选区与搜索命中的变更只经 draw 阶段快照通知、组合期读不到，
- *   所以那两类高亮仍由 [drawOverlayLayers] 在绘制期直接投影真实状态
+ *   所以高亮在绘制期投影真实状态；搜索背景先于字形，选区在字形后叠加
  * @param pagePos 页在选区页空间中的相对位置（0=当前页 / 1=下一页 / 2=下下页 / -1=上一页不参与）
  */
 @Composable
@@ -147,8 +148,8 @@ fun PageContentCanvas(
  * miss 时（就地重排版等异常路径）按需 measure 补入，保证不出现缺字。
  */
 internal class TextLayoutCache(
-    internal val contentCharLayouts: HashMap<String, ColumnLayout>,
-    internal val titleCharLayouts: HashMap<String, ColumnLayout>,
+    internal val contentCharLayouts: HashMap<Pair<String, Boolean?>, ColumnLayout>,
+    internal val titleCharLayouts: HashMap<Pair<String, Boolean?>, ColumnLayout>,
     internal val reviewLayouts: HashMap<String, ColumnLayout>,
     private val textMeasurer: TextMeasurer,
     private val style: ReaderDrawStyle,
@@ -179,30 +180,33 @@ internal class TextLayoutCache(
     fun textLayout(column: TextColumn): ColumnLayout? {
         val isTitle = column.textLine.isTitle
         val map = if (isTitle) titleCharLayouts else contentCharLayouts
-        val cached = map[column.charData]
+        val cached = map[column.charData to column.bold]
         if (cached != null) return cached
         // miss 兜底: 就地重排版等异常路径按需 measure 补入, 不出现缺字
         // （正常路径构建期已全量填充, 此处零触发）
-        return measureText(column.charData, isTitle)
+        return measureText(column.charData, isTitle, column.bold)
     }
 
-    internal fun measureText(charData: String, isTitle: Boolean): ColumnLayout {
+    internal fun measureText(charData: String, isTitle: Boolean, bold: Boolean?): ColumnLayout {
         // 用基础样式 measure (lineStyle 已含正文色): 朗读/搜索高亮色
         // 不参与布局 (颜色不影响几何/换行), 由绘制期 drawText(color=...) 覆盖,
         // 避免朗读逐词推进触发全页重 measure (见 drawTextColumn)
-        val layout = textMeasurer.measure(
-            charData,
-            if (isTitle) style.titleStyle else style.contentStyle,
-        )
+        val baseStyle = if (isTitle) style.titleStyle else style.contentStyle
+        val textStyle = when (bold) {
+            true -> baseStyle.copy(fontWeight = FontWeight.Bold)
+            false -> baseStyle.copy(fontWeight = FontWeight.Normal)
+            null -> baseStyle
+        }
+        val layout = textMeasurer.measure(charData, textStyle)
         val columnLayout = ColumnLayout(
             layout = layout,
             baselineOffset = if (isTitle) titleBaseline else contentBaseline,
             letterSpacingHalf = if (isTitle) titleSpacingHalf else contentSpacingHalf,
         )
         if (isTitle) {
-            titleCharLayouts[charData] = columnLayout
+            titleCharLayouts[charData to bold] = columnLayout
         } else {
-            contentCharLayouts[charData] = columnLayout
+            contentCharLayouts[charData to bold] = columnLayout
         }
         return columnLayout
     }
@@ -322,8 +326,8 @@ internal class TextLayoutCache(
                     when (column) {
                         is TextColumn -> {
                             val map = if (isTitle) cache.titleCharLayouts else cache.contentCharLayouts
-                            if (!map.containsKey(column.charData)) {
-                                cache.measureText(column.charData, isTitle)
+                            if (!map.containsKey(column.charData to column.bold)) {
+                                cache.measureText(column.charData, isTitle, column.bold)
                                 if (++measured % COLUMN_BATCH == 0) yield()
                             }
                         }
@@ -350,8 +354,8 @@ internal class TextLayoutCache(
                     when (column) {
                         is TextColumn -> {
                             val map = if (isTitle) cache.titleCharLayouts else cache.contentCharLayouts
-                            if (!map.containsKey(column.charData)) {
-                                cache.measureText(column.charData, isTitle)
+                            if (!map.containsKey(column.charData to column.bold)) {
+                                cache.measureText(column.charData, isTitle, column.bold)
                             }
                         }
                         is ReviewColumn -> {
@@ -402,7 +406,7 @@ internal fun ensureTextLayoutCache(
  *
  * 采用分层绘制架构：
  * 1. 基础不可变文字/图片/段评层：[drawBasePageContent]（朗读高亮只在此层换文字色）
- * 2. Overlay 叠加层（选区、搜索高亮）：[drawOverlayLayers]
+ * 2. Overlay 叠加层（手势选区）：[drawOverlayLayers]
  *
  * @param offsetY 整页垂直平移量（px）：滚动模式单画布三页连排用，对照原版
  *   `drawPage(canvas, relativeOffset)` 的页间偏移；0 时不套 translate 零开销
@@ -461,12 +465,26 @@ private fun DrawScope.drawPageContentInner(
     searchHighlight: SearchHighlightOverlay? = null,
     pagePos: Int = 0,
 ) {
+    // Decoration and search backgrounds must precede glyphs, including opaque user colors.
+    for (line in textPage.lines) {
+        for (column in line.columns) {
+            if (column is TextColumn) column.backgroundColor?.let {
+                drawRect(Color(it), Offset(column.start, line.lineTop),
+                    Size(column.end - column.start, line.lineBottom - line.lineTop))
+            }
+        }
+    }
+    if (searchHighlight != null) {
+        PageOverlayProjector.projectSearchResult(textPage, searchHighlight) { l, t, r, b, _ ->
+            drawRect(style.searchColor, Offset(l, t), Size(r - l, b - t))
+        }
+    }
     // 1. 基础不可变内容层（文字、图片、段评气泡、基础下划线、朗读/搜索高亮文字色）
     val ttsLines = ttsHighlight?.let { PageOverlayProjector.projectTTS(textPage, it) } ?: IntRange.EMPTY
     drawBasePageContent(textPage, style, layoutCache, failedImage, ttsLines, searchHighlight)
 
     // 2. 独立叠加绘制层（Overlay 几何投影高亮）
-    drawOverlayLayers(textPage, style, selection, searchHighlight, pagePos)
+    drawOverlayLayers(textPage, style, selection, pagePos)
 }
 
 /**
@@ -493,6 +511,8 @@ private fun DrawScope.drawBasePageContent(
         val lineTop = textLine.lineTop
         val lineBase = textLine.lineBase
         val lineHeight = textLine.lineBottom - textLine.lineTop
+        val hasUnderlineOverride = textLine.columns.any { it is TextColumn && it.underline != null }
+        val drawLineUnderline = style.underline && !textLine.isImage && !hasUnderlineOverride
         var columnChapterOffset = 0
         for (columnIndex in textLine.columns.indices) {
             val column = textLine.columns[columnIndex]
@@ -511,12 +531,18 @@ private fun DrawScope.drawBasePageContent(
                         drawTextColumn(
                             column = column,
                             layout = cached,
-                            textColor = if (isReadAloud || isSearchHit) {
-                                style.accentColor
-                            } else {
-                                style.textColor
+                            textColor = when {
+                                isReadAloud -> style.accentColor
+                                isSearchHit -> style.searchTextColor
+                                column.foregroundColor != null -> Color(column.foregroundColor!!)
+                                textLine.isTitle -> style.titleStyle.color
+                                else -> style.textColor
                             },
+                            lineTop = lineTop,
                             lineBase = lineBase,
+                            lineHeight = lineHeight,
+                            underline = !drawLineUnderline && (column.underline ?: style.underline),
+                            underlineWidth = underlineWidth,
                         )
                     }
                 }
@@ -554,7 +580,7 @@ private fun DrawScope.drawBasePageContent(
             )
         }
         // 配置项下划线（与 app 端 ReadBookConfig.underline → drawUnderline 一致，图片行不画）
-        if (style.underline && !textLine.isImage) {
+        if (drawLineUnderline) {
             drawLineUnderline(
                 textLine.lineStart + textLine.indentWidth, textLine.lineEnd,
                 lineTop + lineHeight - underlineWidth, style.textColor, underlineWidth
@@ -572,7 +598,6 @@ private fun DrawScope.drawOverlayLayers(
     textPage: TextPage,
     style: ReaderDrawStyle,
     selection: PageSelectionState? = null,
-    searchHighlight: SearchHighlightOverlay? = null,
     pagePos: Int = 0,
 ) {
     // 1. 绘制手势选择状态机投影（拖拽热路径：边投影边画，零 List/矩形对象分配）
@@ -583,13 +608,6 @@ private fun DrawScope.drawOverlayLayers(
         }
     }
 
-    // 2. 搜索命中是外部章内区间；每页独立求交，跨页结果自然覆盖所有涉及页面
-    if (searchHighlight != null) {
-        val searchColor = style.searchColor
-        PageOverlayProjector.projectSearchResult(textPage, searchHighlight) { l, t, r, b, _ ->
-            drawRect(color = searchColor, topLeft = Offset(l, t), size = Size(r - l, b - t))
-        }
-    }
 }
 
 /**
@@ -649,13 +667,17 @@ private fun DrawScope.drawLineUnderline(
  * （标点挤压裁左半的字形左移量，未挤压为 0），
  * y = lineBase - baselineOffset（drawText topLeft 是文本框左上角，lineBase 折算回框顶）。
  *
- * 选中高亮与搜索背景已解耦至 [drawOverlayLayers] 独立绘制（按列盒，不跟随字形偏移）。
+ * 搜索背景在文字之前绘制，手势选区由 [drawOverlayLayers] 叠加；二者均按列盒、不跟随字形偏移。
  */
 private fun DrawScope.drawTextColumn(
     column: TextColumn,
     layout: ColumnLayout,
     textColor: Color,
+    lineTop: Float,
     lineBase: Float,
+    lineHeight: Float,
+    underline: Boolean,
+    underlineWidth: Float,
 ) {
     val x = column.start + layout.letterSpacingHalf + column.drawOffsetX
     val y = lineBase - layout.baselineOffset
@@ -668,6 +690,10 @@ private fun DrawScope.drawTextColumn(
     // 颜色不参与布局, 只改 paint.color 重放 glyph)。高亮变化零 measure 纯重绘,
     // 视觉与原"颜色固化进布局"一致 (同判定同色值)
     drawText(layout.layout, topLeft = Offset(x, y), color = textColor)
+    if (underline) {
+        drawLineUnderline(column.start, column.end, lineTop + lineHeight - underlineWidth,
+            textColor, underlineWidth)
+    }
 }
 
 /**

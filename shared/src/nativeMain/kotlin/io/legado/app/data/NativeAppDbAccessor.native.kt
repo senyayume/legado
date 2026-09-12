@@ -20,13 +20,13 @@ import io.legado.app.data.dao.TxtTocRuleDao
 
 /**
  * iOS/鸿蒙 (Native target) 共用 [AppDbAccessor] 实现:
- * 委托 [AppDatabaseProviders.get].appDb 的全部 17 个 DAO,
+ * 委托 [AppDatabaseProviders.get].appDb 的全部 19 个 DAO,
  * 供 shared commonMain 中下沉的 webBook 编排层 (WebBook/BookContent/
  * SourceHelp/SearchBookFilter/ReadBookViewModelShared 等) 通过 [AppDbProviders]
  * 间接访问 appDb。
  *
  * # 共用原因
- * iOS 与鸿蒙两端 AppDbAccessor 主体实现完全一致 (17 个 DAO 直接转发 appDb 的 abstract val),
+ * iOS 与鸿蒙两端 AppDbAccessor 主体实现完全一致 (19 个 DAO 直接转发 appDb 的 abstract val),
  * 仅类名 (IosAppDbAccessor / OhosAppDbAccessor)
  * 与注册函数不同, 故下沉到 nativeMain 共用, 平台源集用 typealias 别名 + 各自 register 函数。
  *
@@ -50,7 +50,7 @@ class NativeAppDbAccessor : AppDbAccessor {
     private val appDb: AppDatabase
         get() = AppDatabaseProviders.get().appDb
 
-    // ---- 17 个 DAO 属性: 直接转发 appDb 的 abstract val ----
+    // ---- 19 个 DAO 属性: 直接转发 appDb 的 abstract val ----
     override val bookDao: BookDao get() = appDb.bookDao
     override val bookSourceDao: BookSourceDao get() = appDb.bookSourceDao
     override val bookChapterDao: BookChapterDao get() = appDb.bookChapterDao
@@ -60,6 +60,8 @@ class NativeAppDbAccessor : AppDbAccessor {
     override val txtTocRuleDao: TxtTocRuleDao get() = appDb.txtTocRuleDao
     override val dictRuleDao: DictRuleDao get() = appDb.dictRuleDao
     override val readRecordDao: ReadRecordDao get() = appDb.readRecordDao
+    override val readColorRuleDao: ReadColorRuleDao get() = appDb.readColorRuleDao
+    override val bookHighlightDao: BookHighlightDao get() = appDb.bookHighlightDao
     override val serverDao: ServerDao get() = appDb.serverDao
     // SearchBookFilter/SourceHelp 下沉新增的 3 个 DAO 暴露点
     override val sourceFilterRuleDao: SourceFilterRuleDao get() = appDb.sourceFilterRuleDao

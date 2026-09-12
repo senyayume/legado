@@ -4,7 +4,7 @@ import androidx.room3.migration.Migration
 import androidx.sqlite.SQLiteConnection
 
 /**
- * Android / 桌面端三条手写迁移: 官方 Room3 的 `Migration.migrate` 是 suspend。
+ * Android / 桌面端手写迁移: 官方 Room3 的 `Migration.migrate` 是 suspend。
  * 迁移体见 [DatabaseMigrationsData]。
  */
 
@@ -23,5 +23,29 @@ internal actual fun migration81To82(): Migration = object : Migration(81, 82) {
 internal actual fun migration82To83(): Migration = object : Migration(82, 83) {
     override suspend fun migrate(connection: SQLiteConnection) {
         DatabaseMigrationsData.migrate82To83(connection)
+    }
+}
+
+internal actual fun migration87To88(): Migration = object : Migration(87, 88) {
+    override suspend fun migrate(connection: SQLiteConnection) {
+        DatabaseMigrationsData.migrate87To88(connection)
+    }
+}
+
+internal actual fun migration88To89(): Migration = object : Migration(88, 89) {
+    override suspend fun migrate(connection: SQLiteConnection) {
+        DatabaseMigrationsData.migrate88To89(connection)
+    }
+}
+
+internal actual fun migration89To90(): Migration = object : Migration(89, 90) {
+    override suspend fun migrate(connection: SQLiteConnection) {
+        DatabaseMigrationsData.migrate89To90(connection)
+    }
+}
+
+internal actual fun migration90To91(): Migration = object : Migration(90, 91) {
+    override suspend fun migrate(connection: SQLiteConnection) {
+        DatabaseMigrationsData.migrate90To91(connection)
     }
 }

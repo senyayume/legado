@@ -46,6 +46,9 @@ expect object BackupFileOps {
     /** 写文本到文件 (覆盖写, 默认 UTF-8)。文件不存在则创建。 */
     fun writeText(path: String, text: String)
 
+    /** 同目录暂存并原子替换；写入或替换失败时保留原文件，不回退到截断重写。 */
+    fun writeTextAtomically(path: String, text: String)
+
     /** 读取文件文本 (默认 UTF-8)。文件不存在抛异常。 */
     fun readText(path: String): String
 

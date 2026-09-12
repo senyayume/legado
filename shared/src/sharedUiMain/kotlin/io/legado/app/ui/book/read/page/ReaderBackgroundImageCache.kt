@@ -4,7 +4,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.ImageShader
+import androidx.compose.ui.graphics.ShaderBrush
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.withTransform
+import io.legado.app.model.read.ReaderBackgroundSettings
+import io.legado.app.model.read.ReaderBackgroundBlend
+import io.legado.app.model.read.ReaderBackgroundLayout
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import io.legado.app.constant.AppLog
@@ -57,8 +68,8 @@ object ReaderBackgroundImageCache {
         synchronized(lock) {
             val now = systemCurrentTimeMillis()
             if (bitmaps.containsKey(source) ||
-                !inFlight.add(source) ||
-                failedAt[source]?.let { now - it < FAIL_RETRY_INTERVAL_MS } == true
+                failedAt[source]?.let { now - it < FAIL_RETRY_INTERVAL_MS } == true ||
+                !inFlight.add(source)
             ) {
                 return
             }
@@ -124,6 +135,9 @@ object ReaderBackgroundImageCache {
             failedAt.remove(source)
         }
     }
+
+    /** Read [version] alongside this status to observe completion and failures. */
+    fun isFailed(source: String): Boolean = synchronized(lock) { source in failedAt }
 }
 
 /**
@@ -168,25 +182,46 @@ internal fun ImageBitmap.regionMeanColor(topRatio: Float, bottomRatio: Float): I
     return 0xFF000000.toInt() or (clamp(r) shl 16) or (clamp(g) shl 8) or clamp(b)
 }
 
-/** 以中心裁剪方式把背景图铺满当前 DrawScope。 */
+/** Reader and draft preview consume the same geometry and blend settings. */
 internal fun DrawScope.drawReaderBackgroundBitmap(
     bitmap: ImageBitmap,
     alpha: Float,
+    settings: ReaderBackgroundSettings = ReaderBackgroundSettings(),
 ) {
-    if (bitmap.width <= 0 || bitmap.height <= 0 || size.width <= 0f || size.height <= 0f) return
-    val scale = maxOf(size.width / bitmap.width, size.height / bitmap.height)
-    val dstWidth = bitmap.width * scale
-    val dstHeight = bitmap.height * scale
-    drawImage(
-        image = bitmap,
-        dstOffset = IntOffset(
-            ((size.width - dstWidth) / 2f).toInt(),
-            ((size.height - dstHeight) / 2f).toInt(),
-        ),
-        dstSize = IntSize(
-            dstWidth.toInt().coerceAtLeast(1),
-            dstHeight.toInt().coerceAtLeast(1),
-        ),
-        alpha = alpha.coerceIn(0f, 1f),
-    )
+    if (!settings.enabled) return
+    val layout = ReaderBackgroundLayout.calculate(bitmap.width, bitmap.height, size.width,
+        size.height, settings) ?: return
+    val blend = when (settings.blend) {
+        ReaderBackgroundBlend.NORMAL -> BlendMode.SrcOver
+        ReaderBackgroundBlend.MULTIPLY -> BlendMode.Multiply
+        ReaderBackgroundBlend.LIGHTEN -> BlendMode.Lighten
+        ReaderBackgroundBlend.OVERLAY -> BlendMode.Overlay
+        ReaderBackgroundBlend.SOFT_LIGHT -> BlendMode.Softlight
+        ReaderBackgroundBlend.SCREEN -> BlendMode.Screen
+        ReaderBackgroundBlend.DARKEN -> BlendMode.Darken
+    }
+    val viewport = size
+    clipRect {
+        if (settings.repeat) {
+            // A repeated shader avoids an unbounded number of draws for tiny images.
+            withTransform({
+                translate(layout.left, layout.top)
+                scale(layout.scale, layout.scale, Offset.Zero)
+            }) {
+                drawRect(
+                    brush = ShaderBrush(ImageShader(bitmap, TileMode.Repeated, TileMode.Repeated)),
+                    topLeft = Offset(-layout.left / layout.scale, -layout.top / layout.scale),
+                    size = Size(viewport.width / layout.scale, viewport.height / layout.scale),
+                    alpha = alpha.coerceIn(0f, 1f), blendMode = blend,
+                )
+            }
+        } else {
+            drawImage(image = bitmap,
+                dstOffset = IntOffset(layout.left.toInt(), layout.top.toInt()),
+                dstSize = IntSize((bitmap.width * layout.scale).toInt().coerceAtLeast(1),
+                    (bitmap.height * layout.scale).toInt().coerceAtLeast(1)),
+                alpha = alpha.coerceIn(0f, 1f), blendMode = blend)
+        }
+    }
+
 }

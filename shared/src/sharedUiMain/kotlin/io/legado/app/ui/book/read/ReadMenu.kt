@@ -139,6 +139,8 @@ import legado.shared.generated.resources.next_chapter
 import legado.shared.generated.resources.previous_chapter
 import legado.shared.generated.resources.replace_rule_title
 import legado.shared.generated.resources.search_content
+import legado.shared.generated.resources.reader_command_palette
+import legado.shared.generated.resources.reader_command_rules
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
 import kotlin.math.PI
@@ -157,6 +159,7 @@ enum class ReadMenuAction {
     ADD_BOOKMARK, EDIT_CONTENT, SYNC_PROGRESS, SIMULATED_READING,
     ENABLE_REPLACE, SAME_TITLE_REMOVED, RE_SEGMENT, REVIEW,
     DEL_RUBY_TAG, DEL_H_TAG, IMAGE_STYLE, UPDATE_TOC, LOG, HELP,
+    READER_PALETTE, COLOR_RULES,
 }
 
 /** 书源操作动作(原 book_read_source PopupMenu) */
@@ -501,6 +504,8 @@ open class BaseReadMenuState(
             ReadMenuAction.SAME_TITLE_REMOVED -> screenModel.viewModel.reverseRemoveSameTitle()
             ReadMenuAction.RE_SEGMENT -> screenModel.viewModel.toggleReSegment()
             ReadMenuAction.IMAGE_STYLE -> screenModel.postDialogEvent(ReaderDialogEvent.ImageStyle)
+            ReadMenuAction.READER_PALETTE -> screenModel.postDialogEvent(ReaderDialogEvent.ReaderPalette)
+            ReadMenuAction.COLOR_RULES -> screenModel.openColorRules()
             ReadMenuAction.UPDATE_TOC -> screenModel.viewModel.updateToc()
             ReadMenuAction.SYNC_PROGRESS -> screenModel.viewModel.syncProgressManual(
                 uploadSuccessAction = { Toasters.get().toast("上传成功") },
@@ -966,6 +971,12 @@ private fun TopOverflowMenu(state: ReadMenuState, tint: Color) {
                 onAction(it)
             }
             OverflowItem("bookmark_add") { click(ReadMenuAction.ADD_BOOKMARK) }
+            DropdownMenuItem(onClick = { click(ReadMenuAction.READER_PALETTE) }) {
+                Text(stringResource(Res.string.reader_command_palette))
+            }
+            DropdownMenuItem(onClick = { click(ReadMenuAction.COLOR_RULES) }) {
+                Text(stringResource(Res.string.reader_command_rules))
+            }
             OverflowItem("edit_content") { click(ReadMenuAction.EDIT_CONTENT) }
             if (menu.syncProgressVisible) {
                 OverflowItem("sync_book_progress_t") { click(ReadMenuAction.SYNC_PROGRESS) }

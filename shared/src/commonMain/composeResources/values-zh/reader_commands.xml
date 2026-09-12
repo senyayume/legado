@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="reader_command_palette">阅读器配色</string>
+    <string name="reader_command_rules">颜色规则</string>
+    <string name="reader_command_highlight">批注高亮</string>
+    <string name="reader_command_foreground">字体着色</string>
+    <string name="reader_command_background">背景高亮</string>
+    <string name="reader_command_remove_highlight">删除批注高亮</string>
+    <string name="reader_command_invalid_selection">请选择同一章节内的文字。</string>
+    <string name="reader_command_save_failed">保存失败，已保留选区。</string>
+    <string name="reader_command_refresh_failed">更改已保存，但页面刷新失败，请重试。</string>
+    <string name="reader_command_stale_selection">章节或选区已变化，请重新选择文字。</string>
+    <string name="reader_command_loading">正在保存…</string>
+</resources>

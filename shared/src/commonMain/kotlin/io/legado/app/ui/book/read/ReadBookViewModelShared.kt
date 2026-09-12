@@ -22,6 +22,7 @@ import io.legado.app.help.book.isNotShelf
 import io.legado.app.help.book.toggleBookshelfCore
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.config.PreferenceProviders
+import io.legado.app.help.config.ReadBookConfigProviders
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.i18n.AppStringKey
 import io.legado.app.help.i18n.appString
@@ -43,6 +44,9 @@ import io.legado.app.model.chapter.chapterWindowSlotOf
 import io.legado.app.model.chapter.isInChapterWindow
 import io.legado.app.model.chapter.resolveChapter
 import io.legado.app.model.fileBook.FileBookProviders
+import io.legado.app.model.read.ReaderPaletteRules
+import io.legado.app.model.read.ReaderHighlightError
+import io.legado.app.model.read.ReaderHighlightException
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.ui.book.read.ReadBookViewModelShared.LayoutConfig.Companion.DEFAULT
 import io.legado.app.ui.book.read.page.PageDelegateShared
@@ -388,6 +392,10 @@ class ReadBookViewModelShared(
 
     /** 当前章排版结果 (委托 readBook.curTextChapter), 供"去重"菜单读 sameTitleRemoved */
     val curTextChapter: StateFlow<TextChapterShared?> get() = readBook.curTextChapter
+
+    fun loadedTextChapter(chapterIndex: Int): TextChapterShared? = listOfNotNull(
+        readBook.prevTextChapter.value, readBook.curTextChapter.value, readBook.nextTextChapter.value,
+    ).firstOrNull { it.chapterIndex == chapterIndex }
 
     /** 当前页索引 (委托 readBook.durPageIndex), 供进度条 page 模式 seekValue 使用 */
     val durPageIndex: StateFlow<Int> get() = readBook.durPageIndex
@@ -1059,6 +1067,7 @@ class ReadBookViewModelShared(
             effectiveReplaceRules = bookContent.effectiveReplaceRules,
             sameTitleRemoved = bookContent.sameTitleRemoved,
         )
+        decorateTextChapter(book, chapter, textChapter)
         pages.forEach { it.textChapter = textChapter }
         // 缓存已处理内容，视口变化时只重排版
         processedContentCache[chapter.index] = ProcessedChapterContent(
@@ -1126,6 +1135,7 @@ class ReadBookViewModelShared(
             effectiveReplaceRules = cached.effectiveReplaceRules,
             sameTitleRemoved = cached.sameTitleRemoved,
         )
+        decorateTextChapter(book, cached.chapter, textChapter)
         pages.forEach { it.textChapter = textChapter }
         val durIndex = readBook.durChapterIndex.value
         when (chapterWindowSlotOf(index, durIndex)) {
@@ -1888,7 +1898,69 @@ class ReadBookViewModelShared(
             layoutCache = paragraphLayoutCache,
             contentWeight = cfg.contentWeight,
             titleWeight = cfg.titleWeight,
+            density = cfg.density,
         )
+    }
+
+    private var decorationGeneration = 0L
+
+    /** 只更新当前滑窗的装饰，不重新下载、分页或清除选区。 */
+    suspend fun refreshReaderDecorations(bookUrl: String): Result<Unit> = try {
+        val book = readBook.book.value
+        if (book == null || book.bookUrl != bookUrl) {
+            throw ReaderHighlightException(ReaderHighlightError.STALE_SELECTION)
+        }
+        val current = readBook.curTextChapter.value
+            ?: throw ReaderHighlightException(ReaderHighlightError.REFRESH)
+        val generation = ++decorationGeneration
+        val chapters = listOfNotNull(
+            readBook.prevTextChapter.value, current, readBook.nextTextChapter.value,
+        )
+        val decorations = withContext(IoDispatcher) {
+            val db = AppDbProviders.get()
+            val rules = db.readColorRuleDao.getForBook(bookUrl)
+            chapters.map { chapter ->
+                Triple(chapter, rules, db.bookHighlightDao.getByChapter(bookUrl, chapter.chapterIndex))
+            }
+        }
+        if (readBook.book.value?.bookUrl != bookUrl ||
+            readBook.curTextChapter.value !== current || generation != decorationGeneration
+        ) throw ReaderHighlightException(ReaderHighlightError.STALE_SELECTION)
+        val palette = ReadBookConfigProviders.getOrNull()?.config?.curReaderPalette()
+        val presets = palette?.let(ReaderPaletteRules::build).orEmpty()
+        decorations.forEach { (chapter, rules, highlights) ->
+            chapter.applyDecorations(bookUrl, rules + presets, highlights, palette?.chapterTitleColor)
+        }
+        bumpPageContentVersion()
+        Result.success(Unit)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Result.failure(error)
+    }
+
+    /** 章节排版完成后一次性叠加自动规则、语义预设和手动高亮。 */
+    private suspend fun decorateTextChapter(
+        book: Book,
+        chapter: BookChapter,
+        textChapter: TextChapterShared,
+    ) {
+        repeat(3) {
+            val generation = decorationGeneration
+            val db = AppDbProviders.get()
+            val rules = db.readColorRuleDao.getForBook(book.bookUrl)
+            val highlights = db.bookHighlightDao.getByChapter(book.bookUrl, chapter.index)
+            if (generation != decorationGeneration) return@repeat
+            val palette = ReadBookConfigProviders.getOrNull()?.config?.curReaderPalette()
+            textChapter.applyDecorations(
+                bookUrl = book.bookUrl,
+                rules = rules + palette?.let(ReaderPaletteRules::build).orEmpty(),
+                highlights = highlights,
+                titleColor = palette?.chapterTitleColor,
+            )
+            return
+        }
+        throw ReaderHighlightException(ReaderHighlightError.REFRESH)
     }
 
     /**
@@ -2416,6 +2488,8 @@ class ReadBookViewModelShared(
         val endPadding: Int = 40,
         val titleMode: Int = 0,
         val textFontPath: String = "",
+        /** 内联图片 dp 样式换算到 px 的密度。 */
+        val density: Float = 1f,
         /** 双页排版（对照 app 端 ChapterProvider.doublePage；true 时按半宽分栏排版） */
         val doublePage: Boolean = false,
         /**

@@ -163,6 +163,7 @@ fun PageViewComposable(
         ReaderBackgroundImage(
             source = style.backgroundImageSource,
             alpha = style.backgroundImageAlpha,
+            settings = style.backgroundSettings,
             modifier = Modifier.fillMaxSize(),
         )
 
@@ -282,6 +283,7 @@ private val tipRefreshChanges = setOf(
 private fun ReaderBackgroundImage(
     source: String?,
     alpha: Float,
+    settings: io.legado.app.model.read.ReaderBackgroundSettings,
     modifier: Modifier = Modifier,
 ) {
     if (source.isNullOrBlank()) return
@@ -292,7 +294,7 @@ private fun ReaderBackgroundImage(
         // 只读 version 建立快照订阅；异步加载完成后重新执行 draw lambda。
         if (ReaderBackgroundImageCache.version < 0) return@Canvas
         val bitmap = ReaderBackgroundImageCache.peek(source) ?: return@Canvas
-        drawReaderBackgroundBitmap(bitmap, alpha)
+        drawReaderBackgroundBitmap(bitmap, alpha, settings)
     }
 }
 
@@ -744,6 +746,7 @@ fun ScrollPageView(
         ReaderBackgroundImage(
             source = style.backgroundImageSource,
             alpha = style.backgroundImageAlpha,
+            settings = style.backgroundSettings,
             modifier = Modifier.fillMaxSize(),
         )
         Column(

@@ -86,6 +86,9 @@ object OhosReaderPlatformProvider : ReaderPlatformProvider {
             onBookmark = screenModel.bookmarkTextCallback(),
             onReadAloud = screenModel.readAloudTextCallback(),
             onSearchContent = screenModel.searchContentTextCallback(),
+            onHighlight = { screenModel.saveSelectedHighlight() },
+            onColorText = { screenModel.openColorRules(it) },
+            onColorBackground = { screenModel.openColorRules(it, background = true) },
         )
         textSelection = ReaderTextSelectionRequest(text, readerMenuAnchor(anchorX, anchorY))
     }

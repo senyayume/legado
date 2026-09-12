@@ -2,6 +2,7 @@ package io.legado.app.ui.config
 
 import androidx.compose.runtime.Composable
 import io.legado.app.constant.PreferKey
+import io.legado.app.help.update.AppUpdateManager
 import io.legado.app.ui.compose.preference.PreferenceScreen
 import io.legado.app.ui.compose.preference.listPreference
 import io.legado.app.ui.compose.preference.preference
@@ -331,19 +332,21 @@ fun OtherConfigScreen(
                 summary = summaryBookInfoDeleteAlert,
                 defaultValue = true,
             )
-            listPreference(
-                prefKey = PreferKey.updateToVariant,
-                title = titleUpdateToVariant,
-                summary = summaryUpdateToVariant,
-                entries = variantEntries,
-                values = variantValues,
-                defaultValue = "default_version",
-            )
-            switchPreference(
-                prefKey = PreferKey.autoCheckUpdate,
-                title = titleAutoCheckUpdate,
-                defaultValue = true,
-            )
+            if (AppUpdateManager.isAvailable()) {
+                listPreference(
+                    prefKey = PreferKey.updateToVariant,
+                    title = titleUpdateToVariant,
+                    summary = summaryUpdateToVariant,
+                    entries = variantEntries,
+                    values = variantValues,
+                    defaultValue = "default_version",
+                )
+                switchPreference(
+                    prefKey = PreferKey.autoCheckUpdate,
+                    title = titleAutoCheckUpdate,
+                    defaultValue = true,
+                )
+            }
             preference(
                 title = titleWebPort,
                 summary = webPortSummary,

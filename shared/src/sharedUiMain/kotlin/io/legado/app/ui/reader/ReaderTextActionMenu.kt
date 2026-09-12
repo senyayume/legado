@@ -19,6 +19,9 @@ import legado.shared.generated.resources.read_aloud
 import legado.shared.generated.resources.replace
 import legado.shared.generated.resources.search_content
 import legado.shared.generated.resources.share
+import legado.shared.generated.resources.reader_command_highlight
+import legado.shared.generated.resources.reader_command_foreground
+import legado.shared.generated.resources.reader_command_background
 import org.jetbrains.compose.resources.stringResource
 
 /** 平台附加菜单项 (Android: 系统注册的 ACTION_PROCESS_TEXT 应用; 其余端无等价机制)。 */
@@ -50,6 +53,9 @@ class ReaderTextActions(
     val onBookmark: (String) -> Unit,
     val onReadAloud: (String) -> Unit,
     val onSearchContent: (String) -> Unit,
+    val onHighlight: ((String) -> Unit)? = null,
+    val onColorText: ((String) -> Unit)? = null,
+    val onColorBackground: ((String) -> Unit)? = null,
 )
 
 /**
@@ -104,6 +110,9 @@ fun ReaderTextActionMenu(
     val searchContentText = stringResource(Res.string.search_content)
     val browserText = stringResource(Res.string.browser)
     val shareText = stringResource(Res.string.share)
+    val highlightText = stringResource(Res.string.reader_command_highlight)
+    val colorText = stringResource(Res.string.reader_command_foreground)
+    val backgroundText = stringResource(Res.string.reader_command_background)
 
     val content = request?.let { req ->
         fun entry(label: String, action: (String) -> Unit) =
@@ -114,6 +123,16 @@ fun ReaderTextActionMenu(
         AppTextMenuContent(
             anchor = req.anchor,
             entries = buildList {
+                // 持久化动作由命令 owner 在刷新成功后清除选区。
+                actions.onHighlight?.let { action ->
+                    add(AppTextMenuEntry(highlightText) { action(req.text) })
+                }
+                actions.onColorText?.let { action ->
+                    add(AppTextMenuEntry(colorText) { action(req.text) })
+                }
+                actions.onColorBackground?.let { action ->
+                    add(AppTextMenuEntry(backgroundText) { action(req.text) })
+                }
                 add(entry(replaceText, actions.onReplace))
                 add(entry(copyText) { PlatformCapabilityProviders.get().copyToClipboard(it) })
                 add(entry(bookmarkText, actions.onBookmark))

@@ -1,5 +1,7 @@
 package io.legado.app.ui.book.read
 
+import legado.shared.generated.resources.reader_palette_saved_refresh_failed
+
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -12,6 +14,19 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookProgress
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.Bookmark
+import io.legado.app.data.entities.BookHighlight
+import io.legado.app.help.config.ReadBookConfigProviders
+import io.legado.app.help.config.ReadStyleConfig
+import io.legado.app.model.read.BookHighlightRepository
+import io.legado.app.model.read.ReaderHighlightCommands
+import io.legado.app.model.read.ReaderHighlightError
+import io.legado.app.model.read.ReaderHighlightException
+import io.legado.app.ui.book.read.page.entities.column.TextColumn
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import io.legado.app.ui.root.PlatformServiceProviders
+import io.legado.app.model.read.ColorRuleError
+import io.legado.app.model.read.ColorRuleException
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.book.BookHelpShared
 import io.legado.app.help.book.BookImageStorageProviders
@@ -88,6 +103,23 @@ var readerAutoPageActive: Boolean by mutableStateOf(false)
  * 对照 [io.legado.app.ui.root.PlatformServiceProviders] 的注册模式。
  */
 interface ReaderPlatformProvider {
+    suspend fun exportColorRules(json: String): Result<Boolean> = try {
+        withContext(IoDispatcher) {
+            val files = PlatformServiceProviders.getOrNull()?.files
+                ?: throw ColorRuleException(ColorRuleError.PLATFORM_UNAVAILABLE)
+            val path = files.saveFile("reader-color-rules.json")
+            if (path == null) Result.success(false)
+            else {
+                BackupFileOps.writeText(path, json)
+                Result.success(true)
+            }
+        }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Result.failure(ColorRuleException(ColorRuleError.FILE_IO, error))
+    }
+
     /** 创建平台菜单控制器（含 [ReadMenuState] + 显隐触发） */
     fun createMenuController(
         navigator: io.legado.app.ui.root.AppNavigator,
@@ -402,6 +434,126 @@ class ReaderScreenModel(
      * 保证搜索跳转与手势选择操作同一实例。
      */
     val selection = PageSelectionState()
+
+    private val _readerCommandError = MutableStateFlow<ReaderHighlightError?>(null)
+    val readerCommandError = _readerCommandError.asStateFlow()
+    private val _readerCommandBusy = MutableStateFlow(false)
+    val readerCommandBusy = _readerCommandBusy.asStateFlow()
+
+    fun clearReaderCommandError() {
+        _readerCommandError.value = null
+    }
+
+    fun openColorRules(keyword: String? = null, background: Boolean = false) {
+        ReaderPlatformProviders.getOrNull()?.dismissTextActionMenu(this)
+        postDialogEvent(ReaderDialogEvent.ColorRules(keyword, background))
+    }
+
+    fun saveSelectedHighlight() {
+        if (_readerCommandBusy.value) return
+        val book = currentBook ?: return
+        val chapter = selection.selectedChapterIndex?.let(viewModel::loadedTextChapter)
+        val range = chapter?.let(selection::chapterRange)
+        if (range == null) {
+            _readerCommandError.value = ReaderHighlightError.INVALID_SELECTION
+            return
+        }
+        val version = selection.tick
+        val config = ReadBookConfigProviders.get().config
+        val palette = config.readerPalette.forMode(config.currentPaletteMode())
+        val record = BookHighlight(
+            bookUrl = book.bookUrl, bookName = book.name, bookAuthor = book.author,
+            chapterIndex = range.chapterIndex, chapterPos = range.start,
+            chapterPosEnd = range.endExclusive, bookText = range.text,
+            chapterName = viewModel.chapterList.value.getOrNull(range.chapterIndex)?.title.orEmpty(),
+            foregroundColor = palette.annotationColor,
+            backgroundColor = palette.annotationBackgroundColor,
+        )
+        ReaderPlatformProviders.getOrNull()?.dismissTextActionMenu(this)
+        _readerCommandBusy.value = true
+        scope.launch(Dispatchers.Main.immediate) {
+            try {
+                val result = ReaderHighlightCommands(BookHighlightRepository(AppDbProviders.get().bookHighlightDao))
+                    .save(record, refresh = {
+                        if (selection.tick != version || !selection.isActive ||
+                            viewModel.loadedTextChapter(range.chapterIndex) !== chapter
+                        ) throw ReaderHighlightException(ReaderHighlightError.STALE_SELECTION)
+                        viewModel.refreshReaderDecorations(book.bookUrl).getOrThrow()
+                    }, onSuccess = {
+                        if (selection.tick == version) selection.cancel()
+                    })
+                reportReaderCommandResult(result)
+            } finally {
+                _readerCommandBusy.value = false
+            }
+        }
+    }
+
+    fun onTextColumnClick(column: TextColumn?): Boolean {
+        val id = column?.manualHighlightId ?: return false
+        val book = currentBook ?: return false
+        val chapterIndex = column.textLine.textPage.chapterIndex
+        scope.launch(Dispatchers.Main.immediate) {
+            try {
+                val record = AppDbProviders.get().bookHighlightDao
+                    .getByChapter(book.bookUrl, chapterIndex).firstOrNull { it.time == id }
+                if (record != null && currentBook?.bookUrl == book.bookUrl) {
+                    postDialogEvent(ReaderDialogEvent.RemoveHighlight(record))
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                reportReaderCommandResult(Result.failure(error))
+            }
+        }
+        return true
+    }
+
+    fun deleteHighlight(highlight: BookHighlight) {
+        if (_readerCommandBusy.value || currentBook?.bookUrl != highlight.bookUrl) return
+        _readerCommandBusy.value = true
+        scope.launch(Dispatchers.Main.immediate) {
+            try {
+                val result = ReaderHighlightCommands(BookHighlightRepository(AppDbProviders.get().bookHighlightDao))
+                    .delete(highlight) {
+                        viewModel.refreshReaderDecorations(highlight.bookUrl).getOrThrow()
+                    }
+                if (result.isSuccess) clearDialogEvent()
+                reportReaderCommandResult(result)
+            } finally {
+                _readerCommandBusy.value = false
+            }
+        }
+    }
+
+    suspend fun applyReaderPalette(target: ReadStyleConfig, palettes: ReadStyleConfig): Result<Unit> {
+        val bookUrl = currentBook?.bookUrl
+            ?: return Result.failure(ReaderHighlightException(ReaderHighlightError.STALE_SELECTION))
+        val saved = ReadBookConfigProviders.get().applyReaderPalette(target, palettes)
+        if (saved.isFailure) return saved
+        val refreshed = viewModel.refreshReaderDecorations(bookUrl)
+        ReadBookEvents.postConfig(ReadConfigChange.BG, ReadConfigChange.BG_ALPHA,
+            ReadConfigChange.STYLE, ReadConfigChange.UP_CONTENT)
+        refreshed.onFailure {
+            AppLog.put("Appearance saved; decoration refresh failed", it)
+            Toasters.get().toast(org.jetbrains.compose.resources.getString(
+                legado.shared.generated.resources.Res.string.reader_palette_saved_refresh_failed))
+        }
+        return Result.success(Unit)
+    }
+
+    suspend fun refreshColorRules(): Result<Unit> = withContext(Dispatchers.Main.immediate) {
+        val bookUrl = currentBook?.bookUrl
+            ?: return@withContext Result.failure(ReaderHighlightException(ReaderHighlightError.STALE_SELECTION))
+        viewModel.refreshReaderDecorations(bookUrl)
+    }
+
+    private fun reportReaderCommandResult(result: Result<Unit>) {
+        val error = result.exceptionOrNull() ?: return
+        AppLog.put("Reader decoration command failed", error)
+        _readerCommandError.value =
+            (error as? ReaderHighlightException)?.reason ?: ReaderHighlightError.STORAGE
+    }
 
     /**
      * 全文搜索态：是否正在展示搜索结果（对照原版 ReadBookActivity.isShowingSearchResult）。
@@ -1020,6 +1172,9 @@ class ReaderScreenModel(
 
 /** 阅读页对话框事件 (由平台菜单状态触发, Route 层渲染对应 shared Composable 对话框) */
 sealed interface ReaderDialogEvent {
+    data object ReaderPalette : ReaderDialogEvent
+    data class ColorRules(val keyword: String? = null, val background: Boolean = false) : ReaderDialogEvent
+    data class RemoveHighlight(val highlight: BookHighlight) : ReaderDialogEvent
     /** 添加书签 (携带预填充的 Bookmark) */
     data class AddBookmark(val bookmark: Bookmark) : ReaderDialogEvent
 

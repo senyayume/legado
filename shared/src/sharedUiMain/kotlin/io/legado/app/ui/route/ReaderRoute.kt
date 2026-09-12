@@ -23,9 +23,17 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.legado.app.constant.AppConst
+import io.legado.app.constant.AppLog
+import io.legado.app.model.read.ReaderBackgroundImportSession
+import io.legado.app.ui.book.read.config.BgImageItem
+import io.legado.app.ui.root.PlatformServiceProviders
+import io.legado.app.ui.root.FileFilter
+import kotlinx.coroutines.CancellationException
+import legado.shared.generated.resources.reader_background_import_failed
 import io.legado.app.constant.PageAnim
 import io.legado.app.constant.PreferKey
 import io.legado.app.data.AppDbProviders
+import io.legado.app.ui.book.read.page.entities.column.TextColumn
 import io.legado.app.data.entities.BookProgress
 import io.legado.app.data.entities.HttpTTS
 import io.legado.app.help.book.BookStorageProviders
@@ -70,6 +78,15 @@ import io.legado.app.ui.book.read.config.HttpTtsEditViewModelShared
 import io.legado.app.ui.book.read.config.PageKeyDialog
 import io.legado.app.ui.book.read.config.ReadAloudDialog
 import io.legado.app.ui.book.read.config.SpeakEngineDialog
+import io.legado.app.ui.book.read.config.ReaderPaletteDialog
+import io.legado.app.ui.book.read.config.ColorRuleScreen
+import io.legado.app.ui.book.read.config.ColorRuleScreenModel
+import io.legado.app.data.entities.ReadColorRule
+import io.legado.app.ui.compose.component.AppDialog
+import io.legado.app.ui.compose.component.AppDialogSizes
+import io.legado.app.ui.compose.component.appDialogSize
+import io.legado.app.model.read.ReaderPaletteDraft
+import io.legado.app.model.read.ReaderHighlightError
 import io.legado.app.ui.book.read.page.TITLE_SIZE_EXTRA_SP
 import io.legado.app.ui.book.read.page.delegate.ScrollPageDelegateCompose
 import io.legado.app.ui.book.read.page.entities.PageDirectionShared
@@ -124,6 +141,12 @@ import legado.shared.generated.resources.restore_last_book_process
 import legado.shared.generated.resources.source_http_header
 import legado.shared.generated.resources.sync_book_progress_t
 import legado.shared.generated.resources.yes
+import legado.shared.generated.resources.reader_command_highlight
+import legado.shared.generated.resources.reader_command_remove_highlight
+import legado.shared.generated.resources.reader_command_invalid_selection
+import legado.shared.generated.resources.reader_command_save_failed
+import legado.shared.generated.resources.reader_command_refresh_failed
+import legado.shared.generated.resources.reader_command_stale_selection
 import org.jetbrains.compose.resources.stringResource
 
 /**
@@ -256,8 +279,8 @@ fun ReaderRoute(
         object : ReaderUiActions {
             // 点击动作 0（默认中心区域）：显示菜单
             // 菜单显示时 ReadMenuOverlay 的 bg Box 拦截触摸调 onBgClick 收起，不经过本回调
-            override fun onPageClick() {
-                screenModel.showMenu()
+            override fun onPageClick(column: TextColumn?) {
+                if (!screenModel.onTextColumnClick(column)) screenModel.showMenu()
             }
 
             override fun onImageLongPress(src: String, x: Float, y: Float) {
@@ -658,8 +681,132 @@ fun ReaderRoute(
     // endregion
 
     // region 对话框渲染 (书签/正文编辑/日志, 由 AndroidReaderMenuState 触发)
+    val commandError by screenModel.readerCommandError.collectAsState()
+    commandError?.let { error ->
+        AppAlertDialog(
+            onDismissRequest = screenModel::clearReaderCommandError,
+            title = stringResource(Res.string.reader_command_highlight),
+            message = stringResource(when (error) {
+                ReaderHighlightError.INVALID_SELECTION -> Res.string.reader_command_invalid_selection
+                ReaderHighlightError.STORAGE -> Res.string.reader_command_save_failed
+                ReaderHighlightError.REFRESH -> Res.string.reader_command_refresh_failed
+                ReaderHighlightError.STALE_SELECTION -> Res.string.reader_command_stale_selection
+            }),
+            okButton = AlertButton(stringResource(Res.string.ok), onClick = screenModel::clearReaderCommandError),
+        )
+    }
     val dialogEvent by screenModel.dialogEvent.collectAsState()
     when (val event = dialogEvent) {
+        is ReaderDialogEvent.ColorRules -> {
+            val ruleScope = rememberCoroutineScope()
+            val model = remember(event) {
+                val palette = readBookConfig.config.readerPalette
+                    .forMode(readBookConfig.config.currentPaletteMode())
+                val initialRule = event.keyword?.let {
+                    ReadColorRule(
+                        bookUrl = book.bookUrl, keyword = it,
+                        foregroundColor = if (event.background) null else palette.annotationColor,
+                        backgroundColor = if (event.background)
+                            palette.searchResultBackgroundColor else null,
+                    )
+                }
+                ColorRuleScreenModel(
+                    scope = ruleScope, bookUrl = book.bookUrl, initialRule = initialRule,
+                    exportFile = provider::exportColorRules,
+                    onRulesChanged = screenModel::refreshColorRules,
+                )
+            }
+            DisposableEffect(model) { onDispose { model.onCleared() } }
+            val rulesState by model.state.collectAsState()
+            AppDialog(
+                onDismissRequest = { if (!rulesState.busy) screenModel.clearDialogEvent() },
+                properties = AppDialogSizes.properties(),
+            ) {
+                androidx.compose.foundation.layout.Box(Modifier.appDialogSize()) {
+                    ColorRuleScreen(
+                        state = rulesState, onEvent = model::dispatch,
+                        onBack = screenModel::clearDialogEvent,
+                    )
+                }
+            }
+        }
+        is ReaderDialogEvent.ReaderPalette -> {
+            val target = remember(event) { readBookConfig.config }
+            val draft = remember(event) { ReaderPaletteDraft(target) }
+            val imports = remember(event) { ReaderBackgroundImportSession() }
+            val importScope = rememberCoroutineScope()
+            var importing by remember(event) { mutableStateOf(false) }
+            val importFailureMessage = stringResource(Res.string.reader_background_import_failed)
+            val backgroundImages = remember {
+                PlatformCapabilityProviders.get().readerBackgroundImageNames().map {
+                    BgImageItem(it.substringBeforeLast('.', it), it)
+                }
+            }
+            DisposableEffect(imports) {
+                onDispose {
+                    imports.cancel().onFailure { AppLog.put("Background cleanup failed", it) }
+                }
+            }
+            ReaderPaletteDialog(
+                draft = draft,
+                initialMode = target.currentPaletteMode(),
+                onApply = { config ->
+                    imports.apply(config) {
+                        screenModel.applyReaderPalette(target, config)
+                    }
+                },
+                onDismiss = screenModel::clearDialogEvent,
+                backgroundImages = backgroundImages,
+                isImporting = importing,
+                onChooseBackground = { mode ->
+                    if (!importing) {
+                        importing = true
+                        importScope.launch {
+                            try {
+                                val imported = withContext(IoDispatcher) {
+                                    val files = PlatformServiceProviders.get().files
+                                    val path = files.pickFile(FileFilter.Images)
+                                    if (path == null) null else try {
+                                        imports.import(path)
+                                    } finally {
+                                        files.discardPickedFile(path)
+                                    }
+                                }
+                                if (imported != null) {
+                                    imported
+                                        .onSuccess { draft.setBackground(mode, 2, it) }
+                                        .onFailure {
+                                            AppLog.put("Background import failed", it)
+                                            Toasters.get().toast(importFailureMessage)
+                                        }
+                                }
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (failure: Exception) {
+                                AppLog.put("Background import failed", failure)
+                                Toasters.get().toast(importFailureMessage)
+                            } finally {
+                                importing = false
+                            }
+                        }
+                    }
+                },
+            )
+        }
+        is ReaderDialogEvent.RemoveHighlight -> {
+            val busy by screenModel.readerCommandBusy.collectAsState()
+            AppAlertDialog(
+                onDismissRequest = { if (!busy) screenModel.clearDialogEvent() },
+                title = stringResource(Res.string.reader_command_remove_highlight),
+                message = event.highlight.bookText,
+                okButton = AlertButton(stringResource(Res.string.ok), dismissOnClick = false, enabled = !busy) {
+                    screenModel.deleteHighlight(event.highlight)
+                },
+                cancelButton = AlertButton(stringResource(Res.string.cancel), enabled = !busy) {
+                    if (!busy) screenModel.clearDialogEvent()
+                },
+            )
+        }
         is ReaderDialogEvent.RestoreProcessConfirm -> {
             // 返回键恢复跳转前进度确认 (对照原版 restoreLastBookProcess 的 alert：
             // 是=恢复跳转前进度并以后总是恢复；否/点外部关闭=放弃快照并以后不再询问)
@@ -1281,6 +1428,7 @@ private fun buildLayoutConfig(
         titleMode = config.titleMode,
         // 度量侧字体与 ReaderDrawStyle 的 loadReaderFontFamily 同一路径，避免度量/绘制不同字体
         textFontPath = config.textFont,
+        density = density.density,
     )
 }
 

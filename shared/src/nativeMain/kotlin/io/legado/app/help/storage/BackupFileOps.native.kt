@@ -5,6 +5,7 @@ import io.legado.app.utils.InputStream
 import okio.FileSystem
 import okio.Path.Companion.toPath
 import okio.buffer
+import io.legado.app.utils.randomUUIDString
 
 /**
  * [BackupFileOps] nativeMain 真实文件操作实现 (含 zip 压缩/解压)。
@@ -80,6 +81,31 @@ actual object BackupFileOps {
         file.parentFile?.mkdirs()
         // 直接 writeText (默认 UTF-8) (kotlin.io.File 无原子写 API, 与 JVM Files.write 行为一致)
         file.writeText(text)
+    }
+
+    actual fun writeTextAtomically(path: String, text: String) {
+        val fs = FileSystem.SYSTEM
+        val target = path.toPath()
+        target.parent?.let { fs.createDirectories(it) }
+        val temporary = (path + "." + randomUUIDString() + ".tmp").toPath()
+        var failure: Throwable? = null
+        try {
+            fs.openReadWrite(temporary, mustCreate = true).use { handle ->
+                val bytes = text.encodeToByteArray()
+                handle.write(0L, bytes, 0, bytes.size)
+                handle.flush()
+            }
+            fs.atomicMove(temporary, target)
+        } catch (error: Throwable) {
+            failure = error
+            throw error
+        } finally {
+            try {
+                fs.delete(temporary, mustExist = false)
+            } catch (cleanup: Throwable) {
+                if (failure != null) failure.addSuppressed(cleanup) else throw cleanup
+            }
+        }
     }
 
     actual fun readText(path: String): String {

@@ -1,6 +1,8 @@
 package io.legado.app.ui.book.read.page.entities
 
 import io.legado.app.data.entities.ReplaceRule
+import io.legado.app.data.entities.BookHighlight
+import io.legado.app.data.entities.ReadColorRule
 import io.legado.app.utils.fastBinarySearchBy
 import kotlin.math.abs
 import kotlin.math.min
@@ -59,4 +61,20 @@ class TextChapterShared(
         return abs(bIndex + 1) - 1
     }
 
+    /** 将自动规则与手动高亮投影到已完成页面，不改变分页和章节坐标。 */
+    fun applyDecorations(
+        bookUrl: String,
+        rules: List<ReadColorRule>,
+        highlights: List<BookHighlight>,
+        titleColor: Int? = null,
+    ) {
+        TextChapterDecorator.apply(
+            pages = pages,
+            bookUrl = bookUrl,
+            chapterIndex = chapterIndex,
+            rules = rules,
+            highlights = highlights,
+            titleColor = titleColor,
+        )
+    }
 }

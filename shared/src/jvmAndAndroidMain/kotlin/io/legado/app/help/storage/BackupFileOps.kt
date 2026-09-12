@@ -16,6 +16,8 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
+import okio.FileSystem
+import okio.Path.Companion.toPath
 
 /**
  * [BackupFileOps] 的 jvmAndAndroidMain actual 实现。
@@ -63,6 +65,12 @@ actual object BackupFileOps {
         FileUtilsBase.createFileIfNotExist(path).writeText(text)
     }
 
+    actual fun writeTextAtomically(path: String, text: String) {
+        writeTextAtomicallyUsing(path, text) { temporary, target ->
+            FileSystem.SYSTEM.atomicMove(temporary.toPath(), target.toPath())
+        }
+    }
+
     actual fun readText(path: String): String {
         return File(path).readText()
     }
@@ -97,5 +105,36 @@ actual object BackupFileOps {
 
     actual fun unZipToPath(zipPath: String, destDir: String) {
         ZipUtils.unZipToPath(File(zipPath), destDir)
+    }
+}
+
+/** Replacement is injected only to verify failures before the irreversible commit boundary. */
+internal fun writeTextAtomicallyUsing(
+    path: String,
+    text: String,
+    replace: (String, String) -> Unit,
+) {
+    val target = File(path).absoluteFile
+    val parent = target.parentFile ?: throw java.io.IOException("Missing parent directory")
+    if (!parent.isDirectory && !parent.mkdirs()) {
+        throw java.io.IOException("Cannot create parent directory")
+    }
+    val temporary = File.createTempFile(".reader-config-", ".tmp", parent)
+    var failure: Throwable? = null
+    try {
+        FileOutputStream(temporary).use { output ->
+            output.write(text.toByteArray(Charsets.UTF_8))
+            output.flush()
+            output.fd.sync()
+        }
+        replace(temporary.absolutePath, target.absolutePath)
+    } catch (error: Throwable) {
+        failure = error
+        throw error
+    } finally {
+        if (temporary.exists() && !temporary.delete()) {
+            val cleanup = java.io.IOException("Cannot remove temporary configuration")
+            if (failure != null) failure.addSuppressed(cleanup) else throw cleanup
+        }
     }
 }

@@ -9,6 +9,7 @@ desugar = "2.1.5"
 
 # ===== Compose Multiplatform (Android/桌面共用基线) =====
 cmp = "1.11.1"
+composeAndroidTest = "1.11.2"
 # 必须与 cmp 基线匹配: 0.41.0 起对 CMP 1.10 编译, 在 1.9.2 上运行时 NoSuchMethodError
 # 0.43.0 含 inlineCode 字号/TextUnit 崩溃修复与同步 parseMarkdown API
 # (注: 0.43.0 按 CMP 1.10 编译; 升 CMP 1.11 后若运行时 NoSuchMethodError 需同步升级 mikepenz 版本)
@@ -214,6 +215,8 @@ androidsvg = { module = "com.caverock:androidsvg-aar", version.ref = "androidsvg
 commons-compress = { module = "org.apache.commons:commons-compress", version.ref = "commonsCompress" }
 junrar = { module = "com.github.junrar:junrar", version.ref = "junrar" }
 ui = { module = "org.jetbrains.compose.ui:ui", version.ref = "cmp" }
+compose-ui-test-junit4 = { module = "androidx.compose.ui:ui-test-junit4", version.ref = "composeAndroidTest" }
+compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest", version.ref = "composeAndroidTest" }
 xz = { module = "org.tukaani:xz", version.ref = "xz" }
 pdfbox = { module = "org.apache.pdfbox:pdfbox", version.ref = "pdfbox" }
 

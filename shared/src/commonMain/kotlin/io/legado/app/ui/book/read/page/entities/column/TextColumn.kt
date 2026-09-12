@@ -19,4 +19,14 @@ data class TextColumn(
 
     override var textLine: TextLine = emptyTextLine
 
+    var foregroundColor: Int? = null
+
+    var backgroundColor: Int? = null
+
+    var underline: Boolean? = null
+
+    var bold: Boolean? = null
+
+    var manualHighlightId: Long? = null
+
 }

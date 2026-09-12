@@ -6,7 +6,7 @@ import io.legado.app.utils.KS_JSON
 /**
  * 内置阅读样式主题 (对应 app 端 `DefaultData.readConfigs` 读 assets/defaultData/readConfig.json)。
  *
- * app 端从 assets 读文件, 非 Android 端无 assets, 故把同一份 JSON 原样内联为常量,
+ * 平台共用内联主题列表，首项排版来自用户提供的阅读预设，
  * 由 [readConfigs] 解码为 [ReadStyleConfig] 列表 (未出现的字段走 data class 默认值)。
  */
 object ReadConfigDefaults {
@@ -24,6 +24,7 @@ object ReadConfigDefaults {
 
     /**
      * 字段集合与原版 `app/src/main/assets/defaultData/readConfig.json` 一致。
+     * 自定义默认值只放在 ReadStyleConfig，禁止在此重复整套排版参数。
      *
      * 首项「微信读书」已内聚为 [ReadStyleConfig] 的字段默认值，故只保留 `name`：
      * 原版在字段默认值与此 JSON 各存一套排版参数，而真正生效的始终是本首项，

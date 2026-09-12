@@ -1,4 +1,12 @@
 pluginManagement {
+    buildscript {
+        repositories { google() }
+        dependencies {
+            // 8.13.19 的计算树哈希会在发布优化时反复递归；9.1.31 已缓存哈希。
+            // 保持 AGP/Kotlin 不变，按 R8 官方方式覆盖其内嵌版本。
+            classpath("com.android.tools:r8:9.1.31")
+        }
+    }
     includeBuild("build-logic")
     repositories {
         maven { url = uri("https://jitpack.io") }

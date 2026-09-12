@@ -7,6 +7,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import io.legado.app.ui.book.read.page.entities.TextLine
 import io.legado.app.ui.book.read.page.entities.TextPage
+import io.legado.app.ui.book.read.page.entities.TextChapterShared
+import io.legado.app.ui.book.read.page.entities.TextChapterDecorator
+import io.legado.app.model.read.BookHighlightMatcher
 import io.legado.app.ui.book.read.page.entities.column.BaseColumn
 import io.legado.app.ui.book.read.page.entities.column.TextColumn
 import io.legado.app.ui.book.read.page.overlay.PageOverlayProjector
@@ -45,6 +48,13 @@ data class PageSelPos(
         val EMPTY = PageSelPos(0, -1, -1)
     }
 }
+
+data class ReaderTextSelection(
+    val chapterIndex: Int,
+    val start: Int,
+    val endExclusive: Int,
+    val text: String,
+)
 
 /**
  * 选区手柄标识（对照原版 activity_book_read.xml 的 cursor_left / cursor_right 两个 ImageView）。
@@ -165,6 +175,42 @@ class PageSelectionState {
      * 由阅读视图层组合期注入。未注入时全部入口回落"只认第 0 页"（等价旧单页模型）。
      */
     var pageSource: SelectionPageSource? = null
+
+    /** 当前选择所属的页实例（只读视图，供外部判断选区是否仍位于当前页） */
+    val currentPage: TextPage? get() = anchorPages[0]
+
+    val selectedChapterIndex: Int?
+        get() {
+            if (!isActive || !start.isValid || !end.isValid) return null
+            val chapter = pageAt(start.pagePos)?.chapterIndex ?: return null
+            return chapter.takeIf { pageAt(end.pagePos)?.chapterIndex == it }
+        }
+
+    /** 只映射选区；章节坐标与原文由排版 owner 提供，不能用 selectedText 的展示拼接持久化。 */
+    fun chapterRange(chapter: TextChapterShared): ReaderTextSelection? {
+        if (!isActive || !start.isValid || !end.isValid) return null
+        val firstPage = pageAt(start.pagePos) ?: return null
+        val lastPage = pageAt(end.pagePos) ?: return null
+        if (firstPage.chapterIndex != chapter.chapterIndex ||
+            lastPage.chapterIndex != chapter.chapterIndex ||
+            chapter.pages.none { it === firstPage } || chapter.pages.none { it === lastPage }
+        ) return null
+        val firstLine = lineAt(start) ?: return null
+        val lastLine = lineAt(end) ?: return null
+        if (firstLine.columns.getOrNull(start.columnIndex) !is TextColumn ||
+            lastLine.columns.getOrNull(end.columnIndex) !is TextColumn
+        ) return null
+        val from = TextChapterDecorator.columnOffset(firstLine, start.columnIndex)
+        val until = TextChapterDecorator.columnOffset(lastLine, end.columnIndex + 1)
+        if (from < 0 || until <= from ||
+            until - from > BookHighlightMatcher.MAX_HIGHLIGHT_TEXT_LENGTH
+        ) return null
+        val text = TextChapterDecorator.canonicalText(chapter.pages)
+        if (until > text.length) return null
+        val selected = text.substring(from, until)
+        if (selected.isBlank()) return null
+        return ReaderTextSelection(chapter.chapterIndex, from, until, selected)
+    }
 
     /**
      * 选区各位置所属的页实例快照（下标 = pagePos，0/1/2），选区创建时记一次。

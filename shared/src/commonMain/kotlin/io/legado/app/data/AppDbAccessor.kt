@@ -11,6 +11,8 @@ import io.legado.app.data.dao.DictRuleDao
 import io.legado.app.data.dao.HttpTTSDao
 import io.legado.app.data.dao.KeyboardAssistsDao
 import io.legado.app.data.dao.ReadRecordDao
+import io.legado.app.data.dao.ReadColorRuleDao
+import io.legado.app.data.dao.BookHighlightDao
 import io.legado.app.data.dao.ReplaceRuleDao
 import io.legado.app.data.dao.RuleSubDao
 import io.legado.app.data.dao.SearchKeywordDao
@@ -22,7 +24,7 @@ import kotlin.concurrent.Volatile
 /**
  * appDb 跨模块只读访问接口。
  *
- * 17 个 DAO 接口已下沉 shared (commonMain), 但 appDb 单例 (AppDatabase)
+ * 19 个 DAO 接口已下沉 shared (commonMain), 但 appDb 单例 (AppDatabase)
  * 仍依赖 Room + appCtx, 留 app 端。本接口仅暴露 webBook 编排层
  * (WebBook/BookChapterList/BookContent) 及下沉的 Book 扩展
  * (getDisplayTitle 等) 及 ReadTimeRecorder 用到的 5 个 DAO
@@ -38,7 +40,7 @@ import kotlin.concurrent.Volatile
  *
  * 下沉 BookInfoViewModelShared.loadGroup 时新增 bookGroupDao 暴露点。
  *
- * 全部 17 个 DAO 均已暴露: shared 业务代码统一走本接口 (AppDbProviders.get()),
+ * 全部 19 个 DAO 均已暴露: shared 业务代码统一走本接口 (AppDbProviders.get()),
  * AppDatabaseProviders 仅保留给 AppDbAccessor 实现与需要完整 Room API
  * (useWriterConnection / VACUUM) 的场景。
  */
@@ -50,6 +52,10 @@ interface AppDbAccessor {
     val bookGroupDao: BookGroupDao
     val replaceRuleDao: ReplaceRuleDao
     val readRecordDao: ReadRecordDao
+    /** 阅读器自动配色规则 DAO。 */
+    val readColorRuleDao: ReadColorRuleDao
+    /** 阅读器手动高亮 DAO。 */
+    val bookHighlightDao: BookHighlightDao
     val serverDao: ServerDao
 
     /** TxtToc 规则 DAO (TxtTocRuleViewModelShared 用)。 */

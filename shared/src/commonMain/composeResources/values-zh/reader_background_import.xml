@@ -1,0 +1,4 @@
+<resources>
+    <string name="reader_palette_saved_refresh_failed">配色已保存，但高亮刷新失败。请重新打开本书重试。</string>
+    <string name="reader_background_import_failed">背景导入失败。请选择可读取且不超过 12 MB 的 PNG、JPG 或 WebP 图片；每次编辑最多导入 32 张。</string>
+</resources>

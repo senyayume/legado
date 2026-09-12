@@ -2,6 +2,7 @@ package io.legado.app.ui.book.read.page.entities.column
 
 import io.legado.app.ui.book.read.page.entities.TextLine
 import io.legado.app.ui.book.read.page.entities.TextLine.Companion.emptyTextLine
+import io.legado.app.model.read.ImageStyleParser
 import kotlin.jvm.JvmField
 
 /**
@@ -15,7 +16,8 @@ data class ImageColumn(
     override var start: Float,
     override var end: Float,
     var src: String,
-    var onClick: String = ""
+    var onClick: String = "",
+    var imageStyle: ImageStyleParser.ImageStyle = ImageStyleParser.ImageStyle.Default,
 ) : BaseColumn {
 
     override var textLine: TextLine = emptyTextLine

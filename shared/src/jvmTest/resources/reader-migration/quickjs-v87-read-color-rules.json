@@ -1,0 +1,64 @@
+{
+  "tableName": "read_color_rules",
+  "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `bookUrl` TEXT NOT NULL, `keyword` TEXT NOT NULL, `foregroundColor` INTEGER, `backgroundColor` INTEGER, `enabled` INTEGER NOT NULL, `sortOrder` INTEGER NOT NULL)",
+  "fields": [
+    {
+      "fieldPath": "id",
+      "columnName": "id",
+      "affinity": "INTEGER",
+      "notNull": true
+    },
+    {
+      "fieldPath": "bookUrl",
+      "columnName": "bookUrl",
+      "affinity": "TEXT",
+      "notNull": true
+    },
+    {
+      "fieldPath": "keyword",
+      "columnName": "keyword",
+      "affinity": "TEXT",
+      "notNull": true
+    },
+    {
+      "fieldPath": "foregroundColor",
+      "columnName": "foregroundColor",
+      "affinity": "INTEGER"
+    },
+    {
+      "fieldPath": "backgroundColor",
+      "columnName": "backgroundColor",
+      "affinity": "INTEGER"
+    },
+    {
+      "fieldPath": "enabled",
+      "columnName": "enabled",
+      "affinity": "INTEGER",
+      "notNull": true
+    },
+    {
+      "fieldPath": "sortOrder",
+      "columnName": "sortOrder",
+      "affinity": "INTEGER",
+      "notNull": true
+    }
+  ],
+  "primaryKey": {
+    "autoGenerate": true,
+    "columnNames": [
+      "id"
+    ]
+  },
+  "indices": [
+    {
+      "name": "index_read_color_rules_bookUrl_keyword",
+      "unique": false,
+      "columnNames": [
+        "bookUrl",
+        "keyword"
+      ],
+      "orders": [],
+      "createSql": "CREATE INDEX IF NOT EXISTS `index_read_color_rules_bookUrl_keyword` ON `${TABLE_NAME}` (`bookUrl`, `keyword`)"
+    }
+  ]
+}

@@ -60,6 +60,8 @@ class DesktopAppDbAccessor : AppDbAccessor {
     override val ruleSubDao get() = appDb.ruleSubDao
     // AllBookmarkViewModelShared / TocViewModel.saveBookmark 用 (书签导出/保存)
     override val bookmarkDao get() = appDb.bookmarkDao
+    override val readColorRuleDao get() = appDb.readColorRuleDao
+    override val bookHighlightDao get() = appDb.bookHighlightDao
 
     // SearchViewModel 用 (搜索历史)
     override val searchKeywordDao get() = appDb.searchKeywordDao

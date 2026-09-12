@@ -5,6 +5,7 @@ import io.legado.app.constant.PageAnim
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.FileUtilsCommon
 import io.legado.app.help.coroutine.Coroutine
+import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.help.storage.BackupFileOps
 import io.legado.app.utils.ColorUtils
@@ -17,6 +18,15 @@ import io.legado.app.utils.hexString
 import io.legado.app.utils.toHexLower
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import io.legado.app.model.read.ReaderPalette
+import io.legado.app.model.read.ReaderPaletteMode
+import io.legado.app.model.read.ReaderPaletteSet
+import io.legado.app.model.read.ReaderBackgroundSettings
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
@@ -45,7 +55,10 @@ import kotlinx.serialization.builtins.ListSerializer
  *    clearBgAndCache / [import] / [exportConfigZip] 已下沉 (基于 [AppFilesDirs] + [BackupFileOps])。
  */
 @Suppress("MemberVisibilityCanBePrivate")
-class ReadBookConfigShared(private val prefs: PreferenceProvider) {
+class ReadBookConfigShared(
+    private val prefs: PreferenceProvider,
+    private val saveDispatcher: CoroutineDispatcher = IoDispatcher,
+) {
 
     // -------------------- 全局简单值 (走 prefs，与 app 端 PreferKey 一致) --------------------
 
@@ -105,6 +118,9 @@ class ReadBookConfigShared(private val prefs: PreferenceProvider) {
 
     private val lock = SynchronizedObject()
     private var saveGeneration = 0L
+    // 两个文件共用 generation 序列；单文件配色提交不取消另一文件的待写快照。
+    private var configSaveGeneration = 0L
+    private var shareSaveGeneration = 0L
     private var initialized = false
     private val internalConfigList = mutableListOf<ReadStyleConfig>()
     private var internalShareConfig: ReadStyleConfig? = null
@@ -246,16 +262,12 @@ class ReadBookConfigShared(private val prefs: PreferenceProvider) {
         // 惰性初始化前调 save 会把空列表与全新默认写盘 (原版 object init 同步加载, 不存在这个窗口)
         ensureInit()
         val snapshot = synchronized(lock) {
-            SaveSnapshot(
-                generation = ++saveGeneration,
-                // ReadStyleConfig 的字段都是值/字符串；copy 后异步任务不再观察可变配置对象。
-                configs = internalConfigList.map { it.copy() },
-                shareConfig = (internalShareConfig ?: ReadStyleConfig()).copy(),
-                configPath = configFilePath,
-                shareConfigPath = shareConfigFilePath,
-            )
+            createSaveSnapshot(++saveGeneration).also {
+                configSaveGeneration = it.generation
+                shareSaveGeneration = it.generation
+            }
         }
-        Coroutine.async {
+        Coroutine.async(context = saveDispatcher) {
             // JSON 编码放在 IO 协程，避免配置较多时阻塞点击线程；快照本身已脱离可变列表。
             val configJson = KS_JSON.encodeToString(
                 ListSerializer(ReadStyleConfig.serializer()),
@@ -268,17 +280,104 @@ class ReadBookConfigShared(private val prefs: PreferenceProvider) {
             // 写盘也受同一把锁保护：新保存若在旧任务写入期间到达，会在旧写完后
             // 获得锁并覆盖为更新快照；旧任务若排在后面，则因 generation 过期而跳过。
             synchronized(lock) {
-                if (snapshot.generation == saveGeneration) {
-                    runCatching {
-                        BackupFileOps.writeText(snapshot.configPath, configJson)
-                        BackupFileOps.writeText(snapshot.shareConfigPath, shareConfigJson)
-                    }.onFailure {
-                        AppLog.put("保存排版配置文件出错", it)
+                runCatching {
+                    if (snapshot.generation == configSaveGeneration) {
+                        BackupFileOps.writeTextAtomically(snapshot.configPath, configJson)
                     }
+                    if (snapshot.generation == shareSaveGeneration) {
+                        BackupFileOps.writeTextAtomically(snapshot.shareConfigPath, shareConfigJson)
+                    }
+                }.onFailure {
+                    AppLog.put("保存排版配置文件出错", it)
                 }
             }
         }
     }
+
+    /**
+     * 配色归属与 [config] 一致，按共享排版开关写入对应配置文件。
+     * 真实写入成功后才发布内存状态；目标、共享开关或对应文件的保存版本变化时拒绝覆盖。
+     */
+    suspend fun applyReaderPalette(
+        target: ReadStyleConfig,
+        appearance: ReadStyleConfig,
+    ): Result<Unit> {
+        return try {
+            currentCoroutineContext().ensureActive()
+            ensureInit()
+            val (snapshot, index, detachedPalettes) = synchronized(lock) {
+                if (config !== target) {
+                    throw ReaderPaletteApplyException(ReaderPaletteApplyFailure.TARGET_CHANGED)
+                }
+                val index = if (shareLayout) null else internalConfigList.indexOfFirst { it === target }
+                if (index != null && index < 0) {
+                    throw ReaderPaletteApplyException(ReaderPaletteApplyFailure.TARGET_CHANGED)
+                }
+                val generation = if (index == null) shareSaveGeneration else configSaveGeneration
+                Triple(createSaveSnapshot(generation), index, target.copy().apply { applyAppearance(appearance) })
+            }
+            withContext(saveDispatcher) {
+                val shared = index == null
+                val path = if (shared) snapshot.shareConfigPath else snapshot.configPath
+                val json = if (shared) {
+                    KS_JSON.encodeToString(
+                        ReadStyleConfig.serializer(),
+                        snapshot.shareConfig.copy().apply { applyAppearance(detachedPalettes) },
+                    )
+                } else {
+                    KS_JSON.encodeToString(
+                        ListSerializer(ReadStyleConfig.serializer()),
+                        snapshot.configs.mapIndexed { position, config ->
+                            if (position == index) {
+                                config.copy().apply { applyAppearance(detachedPalettes) }
+                            } else {
+                                config
+                            }
+                        },
+                    )
+                }
+                val context = currentCoroutineContext()
+                synchronized(lock) {
+                    context.ensureActive()
+                    if (shared != shareLayout || config !== target ||
+                        if (shared) {
+                            snapshot.generation != shareSaveGeneration ||
+                                internalShareConfig != snapshot.shareConfig ||
+                                shareConfigFilePath != path
+                        } else {
+                            snapshot.generation != configSaveGeneration ||
+                                internalConfigList != snapshot.configs ||
+                                configFilePath != path
+                        }
+                    ) {
+                        throw ReaderPaletteApplyException(ReaderPaletteApplyFailure.TARGET_CHANGED)
+                    }
+                    BackupFileOps.writeTextAtomically(path, json)
+                    // 仅淘汰目标文件的旧快照，另一文件的普通 save 仍可执行。
+                    if (shared) shareSaveGeneration = ++saveGeneration
+                    else configSaveGeneration = ++saveGeneration
+                    target.applyAppearance(detachedPalettes)
+                }
+            }
+            Result.success(Unit)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: ReaderPaletteApplyException) {
+            Result.failure(error)
+        } catch (error: Exception) {
+            Result.failure(ReaderPaletteApplyException(ReaderPaletteApplyFailure.WRITE_FAILED, error))
+        }
+    }
+
+    private fun createSaveSnapshot(generation: Long) = SaveSnapshot(
+        generation = generation,
+        configs = internalConfigList.map { it.copy(readerPalette = it.readerPalette.detachedCopy()) },
+        shareConfig = (internalShareConfig ?: ReadStyleConfig()).let {
+            it.copy(readerPalette = it.readerPalette.detachedCopy())
+        },
+        configPath = configFilePath,
+        shareConfigPath = shareConfigFilePath,
+    )
 
     private data class SaveSnapshot(
         val generation: Long,
@@ -876,6 +975,19 @@ class ReadBookConfigShared(private val prefs: PreferenceProvider) {
     }
 }
 
+enum class ReaderPaletteApplyFailure { TARGET_CHANGED, WRITE_FAILED }
+
+class ReaderPaletteApplyException(
+    val reason: ReaderPaletteApplyFailure,
+    cause: Throwable? = null,
+) : Exception(null, cause)
+
+private fun ReaderPaletteSet.detachedCopy() = copy(
+    day = day.copy(),
+    night = night.copy(),
+    eInk = eInk.copy(),
+)
+
 /**
  * 样式主题配置（对应 app 端 `ReadBookConfig.Config`，52 个序列化字段逐一对齐）。
  *
@@ -889,16 +1001,13 @@ class ReadBookConfigShared(private val prefs: PreferenceProvider) {
  *
  * 字号 / 字距 / 行距 / 段距 / 边距 / 页眉页脚这一整套是内置主题「微信读书」的
  * 唯一代码模板；[ReadConfigDefaults] 的 JSON 首项只需保留名称并继承这些字段默认值。
- * 存量用户不受影响（他们读已落盘的 `readConfig.json`）。
- *
- * 行距与段距的取值略低于 W3C clreq 7.1.1.5 的印刷建议区间（行距 = 字号的 50%–100%），
- * 规范同时写明「行长较短或字号较小时行距设定也会相对较小」，手机屏属该情形；
- * 用户可在阅读设置里自行调高。
+ * 模板采用用户提供的 readConfig.zip 排版；背景图片的主色转为纯色，避免继承设备路径。
+ * 翻页采用用户后续选择的横向滑动。存量配置中明确保存的字段继续使用原值。
  */
 @Serializable
 data class ReadStyleConfig(
     var name: String = "",
-    var bgStr: String = "#ffc0edc6",// 白天背景
+    var bgStr: String = "#DCD9C6",// 白天背景
     var bgStrNight: String = "#000000",// 夜间背景
     var bgStrEInk: String = "#FFFFFF",// EInk 背景
     var bgAlpha: Int = 100,// 背景透明度
@@ -908,47 +1017,53 @@ data class ReadStyleConfig(
     var darkStatusIcon: Boolean = true,
     var darkStatusIconNight: Boolean = false,
     var darkStatusIconEInk: Boolean = true,
-    @SerialName("textColor") var textColorStr: String = "#ff0b0b0b",
+    @SerialName("textColor") var textColorStr: String = "#3E3D3B",
     @SerialName("textColorNight") var textColorStrNight: String = "#ADADAD",
     @SerialName("textColorEInk") var textColorStrEInk: String = "#000000",
-    var pageAnim: Int = 0,// 翻页动画
+    var pageAnim: Int = PageAnim.slidePageAnim,// 翻页动画
     var pageAnimEInk: Int = PageAnim.noAnim,
     var textFont: String = "",// 字体
     var textBold: Int = 0,// 是否粗体字 0:正常 1:粗体 2:细体
-    var textSize: Int = 24,// 文字大小
-    var letterSpacing: Float = 0f,// 字间距（em）；0 = 密排，对应 clreq 6.3.1 「字符外框彼此紧贴」
-    var lineSpacingExtra: Int = 10,// 行高乘数 ×10（行距 = 行盒高 × 本值/10）
-    var paragraphSpacing: Int = 6,// 段距 ×10（额外留白 = 行盒高 × 本值/10）
+    var textSize: Int = 21,// 文字大小
+    var letterSpacing: Float = 0.06f,// 字间距（em）
+    var lineSpacingExtra: Int = 13,// 行高乘数 ×10（行距 = 行盒高 × 本值/10）
+    var paragraphSpacing: Int = 5,// 段距 ×10（额外留白 = 行盒高 × 本值/10）
     var titleMode: Int = 0,// 标题位置 0:居左 1:居中 2:隐藏
-    var titleSize: Int = 4,// 标题字号增量（sp，叠在正文字号上）
-    var titleTopSpacing: Int = 0,
+    var titleSize: Int = 2,// 标题字号增量（sp，叠在正文字号上）
+    var titleTopSpacing: Int = 24,
     var titleBottomSpacing: Int = 0,
     var paragraphIndent: String = "　　",// 段落缩进（clreq 6.2.1.1：中文出版以两个汉字为标准）
     var underline: Boolean = false,// 下划线
-    var paddingBottom: Int = 4,
-    var paddingLeft: Int = 22,
-    var paddingRight: Int = 22,
-    var paddingTop: Int = 5,
+    var paddingBottom: Int = 25,
+    var paddingLeft: Int = 25,
+    var paddingRight: Int = 25,
+    var paddingTop: Int = 25,
     var headerPaddingBottom: Int = 0,
-    var headerPaddingLeft: Int = 19,
+    var headerPaddingLeft: Int = 16,
     var headerPaddingRight: Int = 16,
-    var headerPaddingTop: Int = 10,
-    var footerPaddingBottom: Int = 10,
-    var footerPaddingLeft: Int = 13,
-    var footerPaddingRight: Int = 17,
-    var footerPaddingTop: Int = 0,
-    var showHeaderLine: Boolean = true,
-    var showFooterLine: Boolean = true,
-    var tipHeaderLeft: Int = ReadTipConfigShared.chapterTitle,
+    var headerPaddingTop: Int = 0,
+    var footerPaddingBottom: Int = 6,
+    var footerPaddingLeft: Int = 16,
+    var footerPaddingRight: Int = 16,
+    var footerPaddingTop: Int = 8,
+    var showHeaderLine: Boolean = false,
+    var showFooterLine: Boolean = false,
+    var tipHeaderLeft: Int = ReadTipConfigShared.time,
     var tipHeaderMiddle: Int = ReadTipConfigShared.none,
-    var tipHeaderRight: Int = ReadTipConfigShared.time,
-    var tipFooterLeft: Int = ReadTipConfigShared.bookName,
+    var tipHeaderRight: Int = ReadTipConfigShared.battery,
+    var tipFooterLeft: Int = ReadTipConfigShared.chapterTitle,
     var tipFooterMiddle: Int = ReadTipConfigShared.none,
     var tipFooterRight: Int = ReadTipConfigShared.pageAndTotal,
-    var tipColor: Int = -10461088,
+    var tipColor: Int = 0,
     var tipDividerColor: Int = -1,
     var headerMode: Int = 0,
     var footerMode: Int = 0,
+    // 新配置和缺少字段的配置启用 ColorTxt 配色；持久化的显式 false 保留用户选择。
+    var readerPaletteEnabled: Boolean = true,
+    var readerPalette: ReaderPaletteSet = ReaderPaletteSet(),
+    var backgroundDay: ReaderBackgroundSettings = ReaderBackgroundSettings(),
+    var backgroundNight: ReaderBackgroundSettings = ReaderBackgroundSettings(),
+    var backgroundEInk: ReaderBackgroundSettings = ReaderBackgroundSettings(),
     /** 白天文字颜色 Int 缓存（对应 app 端 `@Transient textColorInt`，不参与序列化）。 */
     @Transient var textColor: Int = 0,
     /** 背景主色 Int（各端取色后写入，不参与序列化）。 */
@@ -983,12 +1098,15 @@ data class ReadStyleConfig(
         runCatching { ColorUtils.parseColor(str) }.getOrDefault(fallback)
 
     /** 当前生效文字颜色 Int（与 app 端 `curTextColor` 一致）。 */
-    fun curTextColor(): Int {
+    fun curTextColor(): Int = textColorForMode(currentPaletteMode())
+
+    /** 指定模式的正文色，复用现有缓存及解析回退，不改变当前模式。 */
+    fun textColorForMode(mode: ReaderPaletteMode): Int {
         if (!initColorInt) initColorInt()
-        return when {
-            isEInk -> textColorIntEInk
-            isNight -> textColorIntNight
-            else -> textColor
+        return when (mode) {
+            ReaderPaletteMode.EINK -> textColorIntEInk
+            ReaderPaletteMode.NIGHT -> textColorIntNight
+            ReaderPaletteMode.DAY -> textColor
         }
     }
 
@@ -1010,6 +1128,85 @@ data class ReadStyleConfig(
                 textColor = color
             }
         }
+    }
+
+    /** Draft edits target an explicit mode, independently of the running app theme. */
+    fun setTextColorForMode(mode: ReaderPaletteMode, color: Int) {
+        when (mode) {
+            ReaderPaletteMode.DAY -> textColorStr = "#${color.hexString}"
+            ReaderPaletteMode.NIGHT -> textColorStrNight = "#${color.hexString}"
+            ReaderPaletteMode.EINK -> textColorStrEInk = "#${color.hexString}"
+        }
+        initColorInt()
+    }
+
+    fun setBackgroundForMode(mode: ReaderPaletteMode, type: Int, source: String) {
+        when (mode) {
+            ReaderPaletteMode.DAY -> { bgType = type; bgStr = source }
+            ReaderPaletteMode.NIGHT -> { bgTypeNight = type; bgStrNight = source }
+            ReaderPaletteMode.EINK -> { bgTypeEInk = type; bgStrEInk = source }
+        }
+        bgMeanColor = 0
+    }
+
+    fun backgroundTypeForMode(mode: ReaderPaletteMode): Int = when (mode) {
+        ReaderPaletteMode.DAY -> bgType
+        ReaderPaletteMode.NIGHT -> bgTypeNight
+        ReaderPaletteMode.EINK -> bgTypeEInk
+    }
+
+    fun backgroundForMode(mode: ReaderPaletteMode): String = when (mode) {
+        ReaderPaletteMode.DAY -> bgStr
+        ReaderPaletteMode.NIGHT -> bgStrNight
+        ReaderPaletteMode.EINK -> bgStrEInk
+    }
+
+    fun backgroundSettingsForMode(mode: ReaderPaletteMode): ReaderBackgroundSettings = when (mode) {
+        ReaderPaletteMode.DAY -> backgroundDay
+        ReaderPaletteMode.NIGHT -> backgroundNight
+        ReaderPaletteMode.EINK -> backgroundEInk
+    }
+
+    fun setBackgroundSettingsForMode(mode: ReaderPaletteMode, settings: ReaderBackgroundSettings) {
+        when (mode) {
+            ReaderPaletteMode.DAY -> backgroundDay = settings
+            ReaderPaletteMode.NIGHT -> backgroundNight = settings
+            ReaderPaletteMode.EINK -> backgroundEInk = settings
+        }
+    }
+
+    fun backgroundImageForMode(mode: ReaderPaletteMode): String? = if (!backgroundSettingsForMode(mode).enabled) null else when (backgroundTypeForMode(mode)) {
+        1 -> "bg://${backgroundForMode(mode)}"
+        2 -> getBgPath(mode.ordinal)
+        else -> null
+    }
+
+    /** Copy only appearance: a palette edit must never overwrite typography or layout. */
+    fun applyAppearance(source: ReadStyleConfig) {
+        ReaderPaletteMode.entries.forEach { mode ->
+            setTextColorForMode(mode, source.textColorForMode(mode))
+            setBackgroundForMode(mode, source.backgroundTypeForMode(mode), source.backgroundForMode(mode))
+            setBackgroundSettingsForMode(mode, source.backgroundSettingsForMode(mode))
+        }
+        bgAlpha = source.bgAlpha.coerceIn(0, 100)
+        readerPalette = source.readerPalette.detachedCopy()
+        readerPaletteEnabled = true
+    }
+
+    fun currentPaletteMode(): ReaderPaletteMode = when {
+        isEInk -> ReaderPaletteMode.EINK
+        isNight -> ReaderPaletteMode.NIGHT
+        else -> ReaderPaletteMode.DAY
+    }
+
+    /** 当前生效的语义配色；显式关闭时返回空配色。 */
+    fun curReaderPalette(): ReaderPalette =
+        if (readerPaletteEnabled) readerPalette.forMode(currentPaletteMode()) else ReaderPalette()
+
+    /** 写入当前模式的语义配色并显式启用。 */
+    fun setCurReaderPalette(value: ReaderPalette) {
+        readerPalette.setForMode(currentPaletteMode(), value)
+        readerPaletteEnabled = true
     }
 
     /** 当前是否暗色状态栏图标。 */
@@ -1056,6 +1253,7 @@ data class ReadStyleConfig(
      * - 纯色背景返回 null。
      */
     fun curBgImageSource(): String? {
+        if (!backgroundSettingsForMode(currentPaletteMode()).enabled) return null
         return when (curBgType()) {
             1 -> curBgStr().takeIf { it.isNotBlank() }?.let { "bg://$it" }
             2 -> {
@@ -1074,22 +1272,35 @@ data class ReadStyleConfig(
     /**
      * 当前生效背景色（ARGB，各端 Canvas/Compose 渲染用）。
      * 纯色背景（bgType==0）按 [curBgStr] 解析并按 [bgAlpha] 折算透明度；
-     * 图片背景用 [bgMeanColor]（代表色，各端渲染背景图后写入）。
-     * 对应 app 端 `ReadBookConfig.upBg()` 产出的 `bgMeanColor` + `bg.alpha`。
+     * 图片背景使用各模式的显式底色，未设置时使用不透明的模式默认色。
+     * 图片透明度由绘制层单独使用 [bgAlpha] 合成。
      *
-     * 非 Android 端没有 Drawable 取色回写时，图片首次绘制前 [bgMeanColor] 可能为 0。
+     * 图片代表色不参与底色解析，保证加载前后和禁用图片时底色稳定。
      * 返回一个不透明的日/夜兜底色，避免翻页层在异步图片加载期间再次透出窗口背景。
      */
-    fun curBgColor(): Int {
-        if (curBgType() != 0) {
-            if (bgMeanColor != 0) return bgMeanColor or 0xFF000000.toInt()
-            return when {
-                isEInk || !isNight -> 0xFFFFFFFF.toInt()
-                else -> 0xFF000000.toInt()
+    fun curBgColor(): Int = bgColorForMode(currentPaletteMode())
+
+    /** 图片叠层的底色独立于图片代表色，关闭图片仍保留用户底色。 */
+    fun bgColorForMode(mode: ReaderPaletteMode): Int {
+        val type = when (mode) {
+            ReaderPaletteMode.DAY -> bgType
+            ReaderPaletteMode.NIGHT -> bgTypeNight
+            ReaderPaletteMode.EINK -> bgTypeEInk
+        }
+        if (type != 0) {
+            backgroundSettingsForMode(mode).baseColor?.let { return it or 0xFF000000.toInt() }
+            return when (mode) {
+                ReaderPaletteMode.DAY, ReaderPaletteMode.EINK -> 0xFFFFFFFF.toInt()
+                ReaderPaletteMode.NIGHT -> 0xFF000000.toInt()
             }
         }
+        val color = when (mode) {
+            ReaderPaletteMode.DAY -> bgStr
+            ReaderPaletteMode.NIGHT -> bgStrNight
+            ReaderPaletteMode.EINK -> bgStrEInk
+        }
         val alpha = (bgAlpha / 100f * 255).toInt().coerceIn(0, 255)
-        return runCatching { ColorUtils.parseColor(curBgStr()) }.getOrDefault(0)
+        return parseColorOr(color, 0)
             .let { (it and 0x00FFFFFF) or (alpha shl 24) }
     }
 
@@ -1118,7 +1329,7 @@ data class ReadStyleConfig(
      *
      * 与 [setCurTextColor] / [setCurBg] 只写当前日/夜/EInk 分支不同, 这里两套一起写并同步
      * 各自的 Int 缓存, 保证切换日/夜主题后 [curTextColor] / [curBgColor] 不残留上一套颜色;
-     * 同时把日/夜背景类型置为 0 (纯色), 避免残留图片背景类型时 curBgColor 走 bgMeanColor 分支。
+     * 同时把日/夜背景类型置为 0 (纯色), 避免残留图片背景类型时 curBgColor 走图片叠层底色分支。
      * (阅读配置面板预设切换用, 对照原版 ReadStyleDialog 切换主题整包替换配置)
      */
     fun setPresetColor(

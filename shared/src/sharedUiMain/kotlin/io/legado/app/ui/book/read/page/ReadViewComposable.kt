@@ -310,6 +310,7 @@ fun ReadViewComposable(
             if (dispatchColumnClick(
                     viewModel, tapScope, x, contentY,
                     latestDelegate is ScrollPageDelegateCompose,
+                    onClick,
                 )
             ) {
                 return@onTapAt
@@ -931,10 +932,16 @@ private fun dispatchColumnClick(
     x: Float,
     y: Float,
     isScroll: Boolean,
+    onTextClick: (TextColumn?) -> Unit,
 ): Boolean {
     val hit = hitColumn(viewModel, x, y, isScroll) ?: return false
     val column = hit.column
     when (column) {
+        is TextColumn -> {
+            if (column.manualHighlightId == null) return false
+            onTextClick(column)
+            return true
+        }
         is ReviewColumn -> {
             // 对照原版 onReviewClick: chapterList[textPage.chapterIndex] + ReviewListDialog
             val book = viewModel.book.value ?: return false
@@ -982,8 +989,7 @@ private fun dispatchColumnClick(
             return false
         }
 
-        // TextColumn 及未下沉列不消费（对照原版 TextColumn 无 click 分支，
-        // ButtonColumn 由 app 端旧排版产生，shared ColumnFactory 不产出）
+        // 未下沉列不消费。
         else -> return false
     }
 }

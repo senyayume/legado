@@ -31,8 +31,8 @@ object UpdateCheckers {
  * 当前端的运行时信息 (平台/版本号/渠道/架构), 由各端启动时注册。
  *
  * 关于页"检查更新"入口以 [AppUpdateManager.isAvailable] 为 gate, 未注册的端不显示入口。
- * 当前 Android (App.onCreate) 与 desktop (Main.kt) 已注册; iOS/鸿蒙未注册, 故无此入口
- * (原版也只有 Android 有), 上架或接侧载后在各自宿主入口注册即可。
+ * 定制 Android 包不注册官方更新环境，避免覆盖迁移功能；desktop 保留自身注册。
+ * 未注册环境的端同时隐藏更新渠道和自动检查设置，不发起版本检测。
  */
 interface AppUpdateEnvironment {
     val platform: UpdatePlatform

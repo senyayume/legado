@@ -41,6 +41,7 @@ data class ReaderDrawStyle(
     val textColor: Color,
     val accentColor: Color,
     val selectedColor: Color,
+    val searchTextColor: Color,
     val searchColor: Color,
     val reviewColor: Color,
     val reviewTextSize: TextUnit,
@@ -53,6 +54,8 @@ data class ReaderDrawStyle(
     val tipColor: Color,
     val underline: Boolean,
     val isEInk: Boolean,
+    val backgroundSettings: io.legado.app.model.read.ReaderBackgroundSettings =
+        io.legado.app.model.read.ReaderBackgroundSettings(),
 )
 
 /**
@@ -150,6 +153,8 @@ private fun buildReaderDrawStyle(
     val titleSize = (readBookConfig.textSize + readBookConfig.titleSize + TITLE_SIZE_EXTRA_SP).sp
     // 页眉/页脚 tip 主题色（tipColor=0 时跟随正文色），正文标题同用此色
     val tipColor = Color(if (readTipConfig.tipColor == 0) readBookConfig.textColor else readTipConfig.tipColor)
+    val palette = readBookConfig.config.curReaderPalette()
+    val chapterTitleColor = palette.chapterTitleColor?.let(::Color) ?: tipColor
     val contentStyle = TextStyle(
         color = textColor,
         fontSize = contentSize,
@@ -164,7 +169,7 @@ private fun buildReaderDrawStyle(
         titleStyle = contentStyle.copy(
             fontSize = titleSize,
             fontWeight = titleWeight,
-            color = tipColor,
+            color = chapterTitleColor,
         ),
         letterSpacingEm = letterSpacing,
         textColor = textColor,
@@ -172,8 +177,9 @@ private fun buildReaderDrawStyle(
         // 长按选中高亮: 动态主题色 (accent) + 透明度处理 (用户需求 2026-08-04,
         // 原版 btn_bg_press_2 固定黑色 0x20 透明度, 现跟随日夜主题)
         selectedColor = accentColor.copy(alpha = 0.25f),
-        // 原版搜索结果只换文字色（accentColor），高亮底色沿用 accent 弱化值
-        searchColor = accentColor.copy(alpha = 0.25f),
+        searchTextColor = palette.searchResultColor?.let(::Color) ?: accentColor,
+        searchColor = palette.searchResultBackgroundColor?.let(::Color)
+            ?: accentColor.copy(alpha = 0.25f),
         // 与 app 端 reviewPaint 一致：正文色 60% 透明度 + 0.45 倍字号
         reviewColor = textColor.copy(alpha = 0.6f),
         reviewTextSize = contentSize * 0.45f,
@@ -185,6 +191,8 @@ private fun buildReaderDrawStyle(
         tipColor = tipColor,
         underline = readBookConfig.underline,
         isEInk = isEInk,
+        backgroundSettings = readBookConfig.config.backgroundSettingsForMode(
+            readBookConfig.config.currentPaletteMode()),
     )
 }
 

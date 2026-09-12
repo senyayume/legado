@@ -1,6 +1,7 @@
 package io.legado.app.ui.book.read.page.provider
 
 import io.legado.app.data.entities.Book
+import io.legado.app.model.read.ImageStyleParser
 import io.legado.app.ui.book.read.page.entities.TextLine
 import io.legado.app.ui.book.read.page.entities.TextPage
 import io.legado.app.ui.book.read.page.entities.column.BaseColumn
@@ -342,17 +343,16 @@ object PaginationEngine {
                 val line = paragraph.lines.first()
                 // 块状图片段落只由 ParagraphLineMetrics.createImage 产出，imageData 必然在
                 val img = checkNotNull(line.imageData) { "图片段落缺 ImgData" }
-                val effectiveStyle = img.style.takeIf { it.isNotBlank() } ?: config.imageStyle
-                val styleUpper = effectiveStyle?.uppercase()
-                val isSingle = styleUpper == Book.imgStyleSingle
+                val imageStyle = ImageStyleParser.resolve(img.src, img.style.ifBlank { config.imageStyle })
+                val isSingle = imageStyle == ImageStyleParser.ImageStyle.Single
 
-                when (styleUpper) {
-                    Book.imgStyleFull -> {
+                when (imageStyle) {
+                    ImageStyleParser.ImageStyle.Full -> {
                         if (line.imageHeight > config.visibleHeight - durY) {
                             prepareNextPageIfNeed(durY + line.imageHeight)
                         }
                     }
-                    Book.imgStyleSingle -> {
+                    ImageStyleParser.ImageStyle.Single -> {
                         if (durY > 0f || pendingTextPage.lines.isNotEmpty()) {
                             prepareNextPageIfNeed(-1f)
                         }
@@ -372,6 +372,7 @@ object PaginationEngine {
                         absStartX + startX + line.imageWidth,
                         img.src,
                         img.onclick,
+                        imageStyle,
                     ),
                 )
                 if (config.doublePage) textLine.isLeftLine = absStartX < config.viewWidth / 2

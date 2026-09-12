@@ -1,6 +1,8 @@
 package io.legado.app.ui.book.read.page.provider
 
 import io.legado.app.data.entities.Book
+import io.legado.app.model.read.ImageStyleParser
+import io.legado.app.model.read.ImageLayoutCalculator
 import io.legado.app.ui.book.read.page.entities.TextPage
 import io.legado.app.ui.book.read.page.entities.column.BaseColumn
 import io.legado.app.ui.book.read.page.entities.column.ImageColumn
@@ -79,7 +81,10 @@ class SimpleChapterLayout(
     val layoutCache: ParagraphLayoutCache = ParagraphLayoutCache(),
     val contentWeight: Int = 400,
     val titleWeight: Int = 700,
+    val density: Float = 1f,
 ) {
+
+    private var activeImageGlobalStyle: String? = null
 
     /**
      * 段评计数 map（layout 开始时由调用方注入，key=逻辑段号，value=段评数）。
@@ -126,6 +131,7 @@ class SimpleChapterLayout(
         contentProcessor: ((String) -> String)? = null,
         prefetchCallback: ((Int) -> Unit)? = null,
     ): ArrayList<TextPage> {
+        activeImageGlobalStyle = imageStyle
         this.reviewCountMap = reviewCountMap
 
         // 1. 异步预取上下章
@@ -256,8 +262,6 @@ class SimpleChapterLayout(
     ): List<ParagraphLineMetrics> {
         val result = mutableListOf<ParagraphLineMetrics>()
         var paragraphSeq = 0
-        val styleUpper = imageStyle?.uppercase()
-        val isTextImageStyle = styleUpper == Book.imgStyleText
 
         for (parsedLine in parsedParagraphs) {
             coroutineContext.ensureActive()
@@ -275,9 +279,10 @@ class SimpleChapterLayout(
                 val rawLine = contentText.substring(lineStartIndex, lineEndIndex)
                 val startsWithImage = srcReplaceChar.isNotEmpty() &&
                     rawLine.trimStart(' ', '　').startsWith(srcReplaceChar)
+                val firstImageStyle = imgList.firstOrNull()?.let { resolveImageStyle(it, imageStyle) }
 
                 val line = when {
-                    startsWithImage && !isTextImageStyle -> rawLine.trimStart(' ', '　')
+                    startsWithImage && firstImageStyle != ImageStyleParser.ImageStyle.Text -> rawLine.trimStart(' ', '　')
                     rawLine.startsWith("　　") -> paragraphIndent + rawLine.substring(2)
                     paragraphIndent.isNotEmpty() && rawLine.isNotEmpty() ->
                         paragraphIndent + rawLine.trimStart(' ', '　')
@@ -291,7 +296,11 @@ class SimpleChapterLayout(
                         line + reviewChar
                     } else line
 
-                if (isTextImageStyle || imgList.isEmpty()) {
+                val imageCount = if (srcReplaceChar.isEmpty()) 0 else line.count { it == srcReplaceChar[0] }
+                val onlyInlineImages = imgList.take(imageCount).all {
+                    resolveImageStyle(it, imageStyle) == ImageStyleParser.ImageStyle.Text
+                }
+                if (onlyInlineImages || imgList.isEmpty()) {
                     val countInLine = if (srcReplaceChar.isNotEmpty()) {
                         lineWithReview.count { it == srcReplaceChar[0] }
                     } else 0
@@ -331,7 +340,8 @@ class SimpleChapterLayout(
                     lineWithReview.forEach { char ->
                         if (srcReplaceChar.isNotEmpty() && char == srcReplaceChar[0]) {
                             val img = imgList.removeFirstOrNull() ?: return@forEach
-                            if (img.style.equals("TEXT", true)) {
+                            val resolvedStyle = resolveImageStyle(img, imageStyle)
+                            if (resolvedStyle == ImageStyleParser.ImageStyle.Text) {
                                 embeddedImages.add(img)
                                 tmp.append(char)
                             } else {
@@ -358,21 +368,16 @@ class SimpleChapterLayout(
                                     isFirstSegment = false
                                 }
                                 val rawSize = imageResolver?.getImageSize(img.src)
-                                val effectiveStyle = img.style.takeIf { it.isNotBlank() } ?: imageStyle
-                                val effectiveUpper = effectiveStyle?.uppercase()
                                 val (fitW, fitH) = if (rawSize != null && rawSize.width > 0 && rawSize.height > 0) {
-                                    if (effectiveUpper == Book.imgStyleFull) {
-                                        val fullW = visibleWidth.toFloat()
-                                        val fullH = rawSize.height.toFloat() * visibleWidth / rawSize.width
-                                        getFitSize(fullW, fullH, visibleWidth.toFloat(), visibleHeight.toFloat())
-                                    } else {
-                                        getFitSize(
-                                            rawSize.width.toFloat(),
-                                            rawSize.height.toFloat(),
-                                            visibleWidth.toFloat(),
-                                            visibleHeight.toFloat(),
-                                        )
-                                    }
+                                    val size = ImageLayoutCalculator.calculate(
+                                        rawWidth = rawSize.width.toFloat(),
+                                        rawHeight = rawSize.height.toFloat(),
+                                        visibleWidth = visibleWidth.toFloat(),
+                                        visibleHeight = visibleHeight.toFloat(),
+                                        style = resolvedStyle,
+                                        density = density,
+                                    )
+                                    size.width to size.height
                                 } else {
                                     val defaultW = visibleWidth.toFloat()
                                     val defaultH = (visibleWidth * 0.6f).coerceAtMost(visibleHeight * 0.5f).coerceAtLeast(100f)
@@ -418,6 +423,9 @@ class SimpleChapterLayout(
         return result
     }
 
+    private fun resolveImageStyle(img: ImgData, globalStyle: String?): ImageStyleParser.ImageStyle =
+        ImageStyleParser.resolve(img.src, img.style.ifBlank { globalStyle })
+
     /**
      * 列工厂：按 [reviewChar] / [srcReplaceChar] / 普通字符分别构造 [ReviewColumn] /
      * [ImageColumn] / [TextColumn]。段号只认 [PaginationEngine] 传入的行内真实段号。
@@ -441,7 +449,8 @@ class SimpleChapterLayout(
                 // 占位符没有配对图片时退回文本列（对齐 app 端 createColumn 的 else 分支），
                 // 不发空 src 图片列
                 if (img != null) {
-                    ImageColumn(absStartX + xStart, absStartX + xEnd, img.src, img.onclick)
+                    ImageColumn(absStartX + xStart, absStartX + xEnd, img.src, img.onclick,
+                        resolveImageStyle(img, activeImageGlobalStyle))
                 } else {
                     TextColumn(absStartX + xStart, absStartX + xEnd, char, drawOffsetX)
                 }

@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
@@ -147,11 +148,35 @@ class AndroidReaderPlatformProvider(
             onBookmark = screenModel.bookmarkTextCallback(),
             onReadAloud = screenModel.readAloudTextCallback(),
             onSearchContent = screenModel.searchContentTextCallback(),
+            onHighlight = { screenModel.saveSelectedHighlight() },
+            onColorText = { screenModel.openColorRules(it) },
+            onColorBackground = { screenModel.openColorRules(it, background = true) },
         )
         textSelection = ReaderTextSelectionRequest(
             text = text,
             anchor = readerMenuAnchor(anchorX, anchorY),
         )
+    }
+
+    override suspend fun exportColorRules(json: String): Result<Boolean> = try {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val files = io.legado.app.ui.root.PlatformServiceProviders.get().files
+            val destination = files.saveFile("reader-color-rules.json")
+            if (destination == null) Result.success(false)
+            else {
+                val uri = destination.toUri()
+                val output = activity.contentResolver.openOutputStream(uri, "wt")
+                    ?: throw java.io.IOException("Cannot open rule export destination")
+                output.bufferedWriter(Charsets.UTF_8).use { it.write(json) }
+                Result.success(true)
+            }
+        }
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Result.failure(io.legado.app.model.read.ColorRuleException(
+            io.legado.app.model.read.ColorRuleError.FILE_IO, error,
+        ))
     }
 
     /**
@@ -718,6 +743,8 @@ private class AndroidReaderMenuState(
             }
 
             // 帮助 (对照原版 menu_help → showHelp("readMenuHelp"))
+            ReadMenuAction.READER_PALETTE -> screenModel.postDialogEvent(ReaderDialogEvent.ReaderPalette)
+            ReadMenuAction.COLOR_RULES -> screenModel.openColorRules()
             ReadMenuAction.HELP -> activity.showHelp("readMenuHelp")
 
             // epub 去除 ruby/h 标签: 全章清缓存重载 (对照原版 menu_del_ruby_tag / menu_del_h_tag)
